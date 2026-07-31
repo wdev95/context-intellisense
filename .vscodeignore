@@ -1,0 +1,11 @@
+# Git / CI / docs
+.git/**
+.github/**
+.gitignore
+
+# Local artifacts
+*.vsix
+
+# Build and release helper scripts are not needed inside the extension package
+build-vsix.js
+install-vsix.js

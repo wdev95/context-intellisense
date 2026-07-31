@@ -1,0 +1,1442 @@
+const fs = require('fs');
+const path = require('path');
+const vscode = require('vscode');
+
+let cache = {
+  xmlPath: '',
+  commandMap: new Map(),
+  commandCompletions: [],
+  commandArgumentSpecs: new Map(),
+  parameterValueDefaults: new Map()
+};
+
+function uniqueValues(values) {
+  return Array.from(new Set(values.filter(Boolean)));
+}
+
+function normalizeTypeLabel(value) {
+  const raw = String(value || '').trim();
+  if (!raw) {
+    return '';
+  }
+
+  const normalized = raw.startsWith('cd:') ? raw.slice(3) : raw;
+  return normalized.toUpperCase();
+}
+
+function escapeMarkdownText(value) {
+  return String(value || '').replace(/([\\`*_{}\[\]()#+\-.!|])/g, '\\$1');
+}
+
+function escapeHtmlText(value) {
+  return String(value || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function buildHtmlKeyValueTable(headers, rows) {
+  if (!rows || rows.length === 0) {
+    return '';
+  }
+
+  const [headerKey, headerValues] = headers;
+  const keyColumnWidthCh = Math.max(
+    String(headerKey || '').length,
+    ...rows.map((row) => String(row[0] || '').length)
+  );
+  const header = [
+    '<table style="border-collapse:collapse; table-layout:auto; width:auto;">',
+    '<thead>',
+    '<tr>',
+    `<th align="left" valign="top" style="text-align:left; vertical-align:top; white-space:nowrap; width:${keyColumnWidthCh}ch; min-width:${keyColumnWidthCh}ch; max-width:${keyColumnWidthCh}ch; padding:0 12px 2px 0;"><nobr>${escapeHtmlText(headerKey)}</nobr></th>`,
+    `<th align="left" valign="top" style="text-align:left; vertical-align:top; padding:0 0 2px 0;">${escapeHtmlText(headerValues)}</th>`,
+    '</tr>',
+    '</thead>',
+    '<tbody>'
+  ].join('');
+
+  const body = rows.map((row) => {
+    const key = escapeHtmlText(String(row[0] || ''));
+    const value = row[1] || '';
+    return [
+      '<tr>',
+      `<td align="left" valign="top" style="text-align:left; vertical-align:top; white-space:nowrap; word-break:keep-all; overflow-wrap:normal; width:${keyColumnWidthCh}ch; min-width:${keyColumnWidthCh}ch; max-width:${keyColumnWidthCh}ch; padding:0 12px 0 0;"><nobr>${key}</nobr></td>`,
+      `<td align="left" valign="top" style="text-align:left; vertical-align:top; padding:0;">${value}</td>`,
+      '</tr>'
+    ].join('');
+  }).join('');
+
+  return `${header}${body}</tbody></table>`;
+}
+
+function formatValueCell(value, isDefault = false) {
+  const text = escapeHtmlText(value);
+  return isDefault ? `<u>${text}</u>` : text;
+}
+
+function chunkValuesForDisplay(values, chunkSize = 8) {
+  if (!Array.isArray(values) || values.length === 0) {
+    return '';
+  }
+
+  const chunks = [];
+  for (let i = 0; i < values.length; i += chunkSize) {
+    chunks.push(values.slice(i, i + chunkSize).join(' '));
+  }
+  return chunks.join('<br/>');
+}
+
+function collectOrderedValues(values, defaults = new Set()) {
+  const ordered = [];
+  const seen = new Set();
+
+  for (const value of values || []) {
+    const key = String(value);
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    ordered.push({ value: key, isDefault: defaults.has(key) });
+  }
+
+  return ordered;
+}
+
+function getDelimiterInfo(delimiter) {
+  switch (delimiter) {
+    case 'brace':
+      return { open: '{', close: '}' };
+    case 'paren':
+      return { open: '(', close: ')' };
+    case 'none':
+      return { open: ' ', close: '' };
+    default:
+      return { open: '[', close: ']' };
+  }
+}
+
+function describeArgumentSpec(spec, options = {}) {
+  const forDocumentation = options.forDocumentation === true;
+  const keywordTypes = uniqueValues(spec.keywordTypes || []).map(normalizeTypeLabel);
+  const parameterNames = uniqueValues(spec.parameterNames || []);
+
+  let core = '...';
+
+  if (spec.kind === 'assignments') {
+    core = spec.list ? '...=..., ...=...' : '...=...';
+  } else if (spec.kind === 'keywords') {
+    core = spec.list ? '..., ...' : '...';
+  } else if (spec.kind === 'csname') {
+    core = '...';
+  } else if (spec.kind === 'content') {
+    core = 'CONTENT';
+  }
+
+  if (forDocumentation) {
+    if (spec.list) {
+      core += '';
+    }
+  }
+
+  return core;
+}
+
+function buildArgumentSnippet(argumentSpecs, startIndex = 1) {
+  const parts = [];
+  let tabIndex = startIndex;
+
+  for (const spec of argumentSpecs || []) {
+    if (spec.kind === 'content') {
+      continue;
+    }
+
+    const delimiter = getDelimiterInfo(spec.delimiter);
+    parts.push(`${delimiter.open}${'${' + tabIndex + '}'}${delimiter.close}`);
+    tabIndex += 1;
+  }
+
+  return {
+    text: parts.join(''),
+    nextIndex: tabIndex
+  };
+}
+
+function buildSignatureParts(commandName, argumentSpecs, options = {}) {
+  const parts = [`\\${commandName}`];
+  const parameters = [];
+  const entry = getCommandEntry(commandName);
+  const activeParameterIndex = Number.isInteger(options.activeParameterIndex) ? options.activeParameterIndex : -1;
+  const activeAssignmentKey = options.activeAssignmentKey || '';
+
+  for (let specIndex = 0; specIndex < (argumentSpecs || []).length; specIndex++) {
+    const spec = argumentSpecs[specIndex];
+    if (spec.kind === 'content') {
+      continue;
+    }
+
+    const delimiter = getDelimiterInfo(spec.delimiter);
+    const schema = describeArgumentSpec(spec);
+    const argumentBody = `${delimiter.open}${schema}${delimiter.close}`;
+    const text = argumentBody;
+    const start = parts.join('').length;
+    parts.push(text);
+    const end = parts.join('').length;
+
+    const docLines = [];
+
+    if (spec.kind === 'assignments') {
+      const parameterRows = [];
+      for (const parameterName of uniqueValues(spec.parameterNames || [])) {
+        if (activeAssignmentKey && specIndex === activeParameterIndex && parameterName !== activeAssignmentKey) {
+          continue;
+        }
+
+        const values = entry && entry.parameterValues.has(parameterName)
+          ? collectOrderedValues(entry.parameterValues.get(parameterName), entry.parameterValueDefaults.get(parameterName))
+          : [];
+        const parameterTypes = entry && entry.parameterTypes && entry.parameterTypes.has(parameterName)
+          ? uniqueValues(Array.from(entry.parameterTypes.get(parameterName)).map(normalizeTypeLabel))
+          : [];
+
+        const renderedValues = values.length > 0
+          ? chunkValuesForDisplay(values.map(item => formatValueCell(item.value, item.isDefault)))
+          : chunkValuesForDisplay(parameterTypes);
+
+        parameterRows.push([parameterName, renderedValues || '']);
+      }
+
+      const table = buildHtmlKeyValueTable(['Key', 'Values'], parameterRows);
+      if (table) {
+        docLines.push(table);
+      }
+    } else if (spec.kind === 'keywords') {
+      const values = uniqueValues(spec.keywordValues || []);
+      const types = uniqueValues((spec.keywordTypes || []).map(normalizeTypeLabel));
+
+      if (values.length > 0) {
+        docLines.push(values.map(value => formatValueCell(value)).join(' '));
+      } else if (types.length > 0) {
+        docLines.push(types.join(' '));
+      }
+    }
+
+    if (docLines.length === 0) {
+      docLines.push(argumentBody);
+    }
+
+    const documentation = new vscode.MarkdownString(docLines.join('  \n'));
+    documentation.supportHtml = true;
+
+    parameters.push({
+      label: [start, end],
+      documentation
+    });
+  }
+
+  return {
+    label: parts.join(''),
+    parameters
+  };
+}
+
+function makeCommandInsertText(commandName, argumentSpecs) {
+  const argSnippet = buildArgumentSnippet(argumentSpecs, 1);
+  if (!argSnippet.text) {
+    return commandName;
+  }
+  return new vscode.SnippetString(`${commandName}${argSnippet.text}`);
+}
+
+function parseAttributes(tag) {
+  const attrs = {};
+  const re = /(\w+)\s*=\s*"([^"]*)"/g;
+  let m;
+  while ((m = re.exec(tag)) !== null) {
+    attrs[m[1]] = m[2];
+  }
+  return attrs;
+}
+
+function ensureEntry(map, name) {
+  if (!map.has(name)) {
+    map.set(name, {
+      keywords: new Set(),
+      parameters: new Set(),
+      parameterValues: new Map(),
+      parameterTypes: new Map(),
+        parameterValueDefaults: new Map(),
+      inherits: new Set(),
+      parameterSources: new Map()
+    });
+  }
+  return map.get(name);
+}
+
+function getReferenceNames(xmlFragment) {
+  const refs = [];
+  const re = /<cd:(?:inherit|resolve)\b([^>]*)\/>/g;
+  let m;
+  while ((m = re.exec(xmlFragment)) !== null) {
+    const attrs = parseAttributes(m[1]);
+    const name = (attrs.name || '').trim();
+    if (name) {
+      refs.push(name);
+    }
+  }
+  return refs;
+}
+
+function parseCommandMap(xmlText) {
+  const commandMap = new Map();
+  const completionCandidates = new Map();
+  const commandArgumentSpecCandidates = new Map();
+
+  function parseArgumentSpecs(commandBlock) {
+    const out = [];
+    const argumentsBlockMatch = commandBlock.match(/<cd:arguments\b[^>]*>([\s\S]*?)<\/cd:arguments>/);
+    if (!argumentsBlockMatch) {
+      return out;
+    }
+
+    const argumentsBlock = argumentsBlockMatch[1];
+    const argBlockRe = /<cd:(keywords|assignments|content|csname)\b([^>]*?)(?:\/\>|>([\s\S]*?)<\/cd:\1>)/g;
+    let am;
+    while ((am = argBlockRe.exec(argumentsBlock)) !== null) {
+      const kind = am[1];
+      const attrs = parseAttributes(am[2]);
+      const body = am[3] || '';
+      const rawDelimiter = (attrs.delimiters || '').trim().toLowerCase();
+      const delimiter = rawDelimiter === 'braces'
+        ? 'brace'
+        : rawDelimiter === 'parenthesis'
+          ? 'paren'
+          : rawDelimiter === 'none'
+            ? 'none'
+            : 'bracket';
+      const optional = (attrs.optional || '').trim().toLowerCase() === 'yes';
+      const list = (attrs.list || '').trim().toLowerCase() === 'yes';
+
+      if (kind === 'keywords') {
+        const keywordValues = [];
+        const keywordTypes = [];
+        const cRe = /<cd:constant\b([^>]*)\/>/g;
+        let cm;
+        while ((cm = cRe.exec(body)) !== null) {
+          const cAttrs = parseAttributes(cm[1]);
+          const explicitValue = (cAttrs.value || '').trim();
+          const explicitType = (cAttrs.type || '').trim();
+
+          if (explicitValue && !explicitValue.startsWith('cd:')) {
+            keywordValues.push(explicitValue);
+          }
+
+          if (explicitType) {
+            keywordTypes.push(explicitType);
+          }
+        }
+
+        out.push({ kind, optional, delimiter, list, keywordValues, keywordTypes });
+        continue;
+      }
+
+      if (kind === 'assignments') {
+        const parameterNames = [];
+        const parameterTypes = new Map();
+        const parameterRe = /<cd:parameter\b([^>]*)>([\s\S]*?)<\/cd:parameter>/g;
+        let pm;
+        while ((pm = parameterRe.exec(body)) !== null) {
+          const pAttrs = parseAttributes(pm[1]);
+          const parameterName = (pAttrs.name || '').trim();
+          if (parameterName && parameterName !== 'cd:key') {
+            parameterNames.push(parameterName);
+            if (!parameterTypes.has(parameterName)) {
+              parameterTypes.set(parameterName, []);
+            }
+          }
+
+          const parameterBody = pm[2] || '';
+          const cRe = /<cd:constant\b([^>]*)\/>/g;
+          let cm;
+          while ((cm = cRe.exec(parameterBody)) !== null) {
+            const cAttrs = parseAttributes(cm[1]);
+            const explicitType = (cAttrs.type || '').trim();
+            if (explicitType && parameterName && parameterName !== 'cd:key') {
+              parameterTypes.get(parameterName).push(explicitType);
+            }
+          }
+        }
+
+        out.push({ kind, optional, delimiter, list, parameterNames, parameterTypes });
+        continue;
+      }
+
+      out.push({ kind, optional, delimiter, list });
+    }
+
+    return out;
+  }
+
+  function getRequiredBracketArgumentCount(commandBlock) {
+    const argumentsBlockMatch = commandBlock.match(/<cd:arguments\b[^>]*>([\s\S]*?)<\/cd:arguments>/);
+    if (!argumentsBlockMatch) {
+      return 0;
+    }
+
+    const argumentsBlock = argumentsBlockMatch[1];
+    const argStartRe = /<cd:(keywords|assignments)\b([^>]*)>/g;
+    let count = 0;
+    let match;
+
+    while ((match = argStartRe.exec(argumentsBlock)) !== null) {
+      const attrs = parseAttributes(match[2]);
+      const optional = (attrs.optional || '').trim().toLowerCase();
+      if (optional === 'yes') {
+        continue;
+      }
+
+      const delimiter = (attrs.delimiters || '').trim().toLowerCase();
+      if (delimiter === 'none' || delimiter === 'braces' || delimiter === 'parenthesis') {
+        continue;
+      }
+
+      // ConTeXt defaults to square brackets when no explicit delimiter is given.
+      count++;
+    }
+
+    return count;
+  }
+
+  function makeRequiredBracketSnippet(count, startIndex = 1) {
+    if (count <= 0) {
+      return { text: '', nextIndex: startIndex };
+    }
+
+    const parts = [];
+    let index = startIndex;
+    for (let i = 0; i < count; i++) {
+      parts.push(`[${'${' + index + '}'}]`);
+      index++;
+    }
+
+    return {
+      text: parts.join(''),
+      nextIndex: index
+    };
+  }
+
+  function registerCompletion(label, item, meta = {}) {
+    if (!completionCandidates.has(label)) {
+      completionCandidates.set(label, []);
+    }
+
+    completionCandidates.get(label).push({
+      kind: item.kind,
+      insertText: item.insertText,
+      sortWeight: item.sortWeight,
+      meta
+    });
+  }
+
+  function registerCommandArgumentSpecs(commandName, argumentSpecs, variant) {
+    if (!commandName || !Array.isArray(argumentSpecs)) {
+      return;
+    }
+    if (!commandArgumentSpecCandidates.has(commandName)) {
+      commandArgumentSpecCandidates.set(commandName, []);
+    }
+    commandArgumentSpecCandidates.get(commandName).push({
+      argumentSpecs,
+      variant: (variant || '').toLowerCase()
+    });
+  }
+
+  function getInsertTextValue(candidate) {
+    if (!candidate || candidate.insertText === undefined || candidate.insertText === null) {
+      return '';
+    }
+
+    if (typeof candidate.insertText === 'string') {
+      return candidate.insertText;
+    }
+
+    if (typeof candidate.insertText.value === 'string') {
+      return candidate.insertText.value;
+    }
+
+    return String(candidate.insertText);
+  }
+
+  function scoreCompletionCandidate(label, candidate) {
+    const text = getInsertTextValue(candidate);
+    const meta = candidate.meta || {};
+    const normalizedVariant = String(meta.variant || '').toLowerCase();
+    const requiredBracketCount = Number(meta.requiredBracketCount || 0);
+
+    let score = 0;
+
+    // Prefer canonical (non-string) XML variants.
+    if (normalizedVariant === 'string') {
+      score -= 200;
+    } else if (normalizedVariant) {
+      score += 20;
+    } else {
+      score += 140;
+    }
+
+    // Prefer environment-aware start/stop snippets where relevant.
+    if (meta.type === 'environment') {
+      score += 80;
+      if (label.startsWith('\\start')) {
+        score += 40;
+      }
+    }
+
+    // Mandatory [] arguments are most important for this workflow.
+    score += requiredBracketCount * 120;
+    if (text.includes('[') && text.includes(']')) {
+      score += 40;
+    }
+    if (/\$\{\d+/.test(text)) {
+      score += 20;
+    }
+
+    if (typeof candidate.insertText !== 'string' && typeof candidate.insertText?.value === 'string') {
+      score += 30;
+    }
+
+    // Stable tie-breaker.
+    score += Math.min(text.length, 100) / 1000;
+    return score;
+  }
+
+  function selectBestCompletionForLabel(label, candidates) {
+    let best = candidates[0];
+    let bestScore = scoreCompletionCandidate(label, best);
+    for (let i = 1; i < candidates.length; i++) {
+      const score = scoreCompletionCandidate(label, candidates[i]);
+      if (score > bestScore) {
+        best = candidates[i];
+        bestScore = score;
+      }
+    }
+    return best;
+  }
+
+  function makeEnvironmentInsertText(startName, argumentSpecs) {
+    const stopName = startName.startsWith('start') && startName.length > 5
+      ? `stop${startName.slice(5)}`
+      : `stop${startName}`;
+
+    const argumentSnippet = buildArgumentSnippet(argumentSpecs, 1);
+    return new vscode.SnippetString(`${startName}${argumentSnippet.text}\n\t$0\n\\${stopName}`);
+  }
+
+  const commandRe = /<cd:command\b[^>]*\/>|<cd:command\b[^>]*>[\s\S]*?<\/cd:command>/g;
+  const commandBlocks = xmlText.match(commandRe) || [];
+
+  for (const block of commandBlocks) {
+    const openTag = block.match(/^<cd:command\b[^>]*\/?>/);
+    if (!openTag) {
+      continue;
+    }
+
+    const attrs = parseAttributes(openTag[0]);
+    const name = attrs.name;
+    const type = attrs.type || '';
+    const variant = attrs.variant || '';
+    const requiredBracketCount = getRequiredBracketArgumentCount(block);
+    const argumentSpecs = parseArgumentSpecs(block);
+    if (!name) {
+      continue;
+    }
+
+    const entry = ensureEntry(commandMap, name);
+
+    const instances = [];
+    const instancesBlock = block.match(/<cd:instances\b[^>]*>[\s\S]*?<\/cd:instances>/);
+    if (instancesBlock) {
+      const iRe = /<cd:constant\b([^>]*)\/>/g;
+      let im;
+      while ((im = iRe.exec(instancesBlock[0])) !== null) {
+        const iAttrs = parseAttributes(im[1]);
+        const value = (iAttrs.value || '').trim();
+        if (value) {
+          instances.push(value);
+        }
+      }
+    }
+
+    if (type === 'environment') {
+      if (instances.length > 0) {
+        for (const instance of instances) {
+          const startName = `start${instance}`;
+          const label = `\\${startName}`;
+          const item = {
+            kind: vscode.CompletionItemKind.Function,
+            insertText: makeEnvironmentInsertText(startName, argumentSpecs),
+            sortWeight: '00'
+          };
+
+          commandMap.set(startName, entry);
+          registerCompletion(label, item, {
+            type,
+            variant,
+            requiredBracketCount,
+            environmentStartName: startName
+          });
+          registerCommandArgumentSpecs(startName, argumentSpecs, variant);
+        }
+      } else {
+        const startName = name.startsWith('start') ? name : `start${name}`;
+        const label = `\\${startName}`;
+        const item = {
+          kind: vscode.CompletionItemKind.Function,
+          insertText: makeEnvironmentInsertText(startName, argumentSpecs),
+          sortWeight: '00'
+        };
+
+        commandMap.set(startName, entry);
+        registerCompletion(label, item, {
+          type,
+          variant,
+          requiredBracketCount,
+          environmentStartName: startName
+        });
+        registerCommandArgumentSpecs(startName, argumentSpecs, variant);
+      }
+    } else {
+      const insertText = makeCommandInsertText(name, argumentSpecs);
+
+      registerCompletion(`\\${name}`, {
+        kind: vscode.CompletionItemKind.Function,
+        insertText,
+        sortWeight: '10'
+      }, {
+        type,
+        variant,
+        requiredBracketCount,
+        commandName: name
+      });
+      registerCommandArgumentSpecs(name, argumentSpecs, variant);
+
+      for (const instance of instances) {
+        const instanceInsertText = makeCommandInsertText(instance, argumentSpecs);
+
+        registerCompletion(`\\${instance}`, {
+          kind: vscode.CompletionItemKind.Function,
+          insertText: instanceInsertText,
+          sortWeight: '11'
+        }, {
+          type,
+          variant,
+          requiredBracketCount,
+          commandName: instance
+        });
+        registerCommandArgumentSpecs(instance, argumentSpecs, variant);
+      }
+    }
+
+    const keywordBlocks = block.match(/<cd:keywords\b[^>]*>[\s\S]*?<\/cd:keywords>/g) || [];
+    for (const keywordBlock of keywordBlocks) {
+      const cRe = /<cd:constant\b([^>]*)\/>/g;
+      let cm;
+      while ((cm = cRe.exec(keywordBlock)) !== null) {
+        const cAttrs = parseAttributes(cm[1]);
+        const value = (cAttrs.value || cAttrs.type || '').trim();
+        if (!value || value.startsWith('cd:')) {
+          continue;
+        }
+        entry.keywords.add(value);
+        if ((cAttrs.default || '').trim().toLowerCase() === 'yes') {
+          if (!entry.parameterValueDefaults.has(name)) {
+            entry.parameterValueDefaults.set(name, new Set());
+          }
+          entry.parameterValueDefaults.get(name).add(value);
+        }
+      }
+
+      for (const refName of getReferenceNames(keywordBlock)) {
+        entry.inherits.add(refName);
+      }
+    }
+
+    const assignmentBlocks = block.match(/<cd:assignments\b[^>]*>[\s\S]*?<\/cd:assignments>/g) || [];
+    for (const assignmentBlock of assignmentBlocks) {
+      const withoutParams = assignmentBlock.replace(/<cd:parameter\b[^>]*>[\s\S]*?<\/cd:parameter>/g, '');
+      for (const refName of getReferenceNames(withoutParams)) {
+        entry.inherits.add(refName);
+      }
+    }
+
+    const pRe = /<cd:parameter\b([^>]*)>/g;
+    let pm;
+    while ((pm = pRe.exec(block)) !== null) {
+      const pAttrs = parseAttributes(pm[1]);
+      const pName = (pAttrs.name || '').trim();
+      if (!pName || pName === 'cd:key') {
+        continue;
+      }
+
+      entry.parameters.add(pName);
+      if (!entry.parameterValues.has(pName)) {
+        entry.parameterValues.set(pName, new Set());
+      }
+      if (!entry.parameterTypes.has(pName)) {
+        entry.parameterTypes.set(pName, new Set());
+      }
+      if (!entry.parameterValueDefaults.has(pName)) {
+        entry.parameterValueDefaults.set(pName, new Set());
+      }
+
+      const bodyStart = pm.index + pm[0].length;
+      const bodyEnd = block.indexOf('</cd:parameter>', bodyStart);
+      if (bodyEnd <= bodyStart) {
+        continue;
+      }
+
+      const parameterBody = block.slice(bodyStart, bodyEnd);
+      const pcRe = /<cd:constant\b([^>]*)\/>/g;
+      let pcm;
+      while ((pcm = pcRe.exec(parameterBody)) !== null) {
+        const cAttrs = parseAttributes(pcm[1]);
+        const value = (cAttrs.value || cAttrs.type || '').trim();
+        const explicitType = (cAttrs.type || '').trim();
+        if (explicitType) {
+          entry.parameterTypes.get(pName).add(explicitType);
+        }
+        if (!value || value.startsWith('cd:')) {
+          continue;
+        }
+        entry.parameterValues.get(pName).add(value);
+        if ((cAttrs.default || '').trim().toLowerCase() === 'yes') {
+          entry.parameterValueDefaults.get(pName).add(value);
+        }
+      }
+
+      if (!entry.parameterSources.has(pName)) {
+        entry.parameterSources.set(pName, new Set());
+      }
+      for (const refName of getReferenceNames(parameterBody)) {
+        entry.parameterSources.get(pName).add(refName);
+      }
+    }
+  }
+
+  const resolved = new Map();
+
+  function mergeResolvedInto(target, source) {
+    for (const keyword of source.keywords) {
+      target.keywords.add(keyword);
+    }
+
+    for (const parameter of source.parameters) {
+      target.parameters.add(parameter);
+    }
+
+    for (const [parameter, values] of source.parameterValues.entries()) {
+      if (!target.parameterValues.has(parameter)) {
+        target.parameterValues.set(parameter, new Set());
+      }
+      const targetValues = target.parameterValues.get(parameter);
+      for (const value of values) {
+        targetValues.add(value);
+      }
+    }
+
+    for (const [parameter, types] of source.parameterTypes.entries()) {
+      if (!target.parameterTypes.has(parameter)) {
+        target.parameterTypes.set(parameter, new Set());
+      }
+      const targetTypes = target.parameterTypes.get(parameter);
+      for (const value of types) {
+        targetTypes.add(value);
+      }
+    }
+
+    for (const [parameter, defaults] of source.parameterValueDefaults.entries()) {
+      if (!target.parameterValueDefaults.has(parameter)) {
+        target.parameterValueDefaults.set(parameter, new Set());
+      }
+      const targetDefaults = target.parameterValueDefaults.get(parameter);
+      for (const value of defaults) {
+        targetDefaults.add(value);
+      }
+    }
+  }
+
+  function resolveEntry(name, stack = new Set()) {
+    if (resolved.has(name)) {
+      return resolved.get(name);
+    }
+
+    if (stack.has(name) || !commandMap.has(name)) {
+      return { keywords: new Set(), parameters: new Set(), parameterValues: new Map(), parameterTypes: new Map(), parameterValueDefaults: new Map() };
+    }
+
+    stack.add(name);
+    const raw = commandMap.get(name);
+    const out = {
+      keywords: new Set(raw.keywords),
+      parameters: new Set(raw.parameters),
+      parameterValues: new Map(),
+      parameterTypes: new Map(),
+      parameterValueDefaults: new Map()
+    };
+
+    for (const [parameter, values] of raw.parameterValues.entries()) {
+      out.parameterValues.set(parameter, new Set(values));
+    }
+
+    for (const [parameter, types] of raw.parameterTypes.entries()) {
+      out.parameterTypes.set(parameter, new Set(types));
+    }
+
+    for (const [parameter, defaults] of raw.parameterValueDefaults.entries()) {
+      out.parameterValueDefaults.set(parameter, new Set(defaults));
+    }
+
+    for (const inheritedName of raw.inherits) {
+      mergeResolvedInto(out, resolveEntry(inheritedName, stack));
+    }
+
+    for (const [parameter, sources] of raw.parameterSources.entries()) {
+      if (!out.parameterValues.has(parameter)) {
+        out.parameterValues.set(parameter, new Set());
+      }
+      const valueSet = out.parameterValues.get(parameter);
+      for (const sourceName of sources) {
+        const sourceEntry = resolveEntry(sourceName, stack);
+        for (const keyword of sourceEntry.keywords) {
+          valueSet.add(keyword);
+        }
+      }
+    }
+
+    for (const [parameter, defaults] of raw.parameterValueDefaults.entries()) {
+      if (!out.parameterValueDefaults.has(parameter)) {
+        out.parameterValueDefaults.set(parameter, new Set());
+      }
+      const valueSet = out.parameterValueDefaults.get(parameter);
+      for (const value of defaults) {
+        valueSet.add(value);
+      }
+    }
+
+    stack.delete(name);
+    resolved.set(name, out);
+    return out;
+  }
+
+  for (const key of commandMap.keys()) {
+    commandMap.set(key, resolveEntry(key));
+  }
+
+  const commandCompletions = [];
+  for (const [label, candidates] of completionCandidates.entries()) {
+    if (!candidates || candidates.length === 0) {
+      continue;
+    }
+    const best = selectBestCompletionForLabel(label, candidates);
+    commandCompletions.push({
+      label,
+      kind: best.kind,
+      insertText: best.insertText,
+      sortWeight: best.sortWeight
+    });
+  }
+
+  const commandArgumentSpecs = new Map();
+  for (const [commandName, candidates] of commandArgumentSpecCandidates.entries()) {
+    if (!candidates || candidates.length === 0) {
+      continue;
+    }
+
+    let best = candidates[0];
+    for (let i = 1; i < candidates.length; i++) {
+      const current = candidates[i];
+      const currentIsString = current.variant === 'string';
+      const bestIsString = best.variant === 'string';
+      if (bestIsString && !currentIsString) {
+        best = current;
+        continue;
+      }
+      if (!best.variant && current.variant) {
+        continue;
+      }
+      if (best.variant && !current.variant) {
+        best = current;
+        continue;
+      }
+      if (current.argumentSpecs.length > best.argumentSpecs.length) {
+        best = current;
+      }
+    }
+
+    commandArgumentSpecs.set(commandName, best.argumentSpecs);
+  }
+
+  return {
+    commandMap,
+    commandCompletions,
+    commandArgumentSpecs
+  };
+}
+
+function cleanFontToken(token) {
+  return token
+    .trim()
+    .replace(/^\\s!/, '')
+    .replace(/^\\/, '')
+    .replace(/^\s+|\s+$/g, '');
+}
+
+function parseFontSourceFile(filePath) {
+  const completions = [];
+  if (!fs.existsSync(filePath)) {
+    return completions;
+  }
+
+  const content = fs.readFileSync(filePath, 'utf8');
+  const lines = content.split(/\r?\n/);
+
+  const styleNames = new Set();
+  const alternativeNames = new Set();
+
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith('%')) {
+      continue;
+    }
+
+    let match = line.match(/\\definefontstyle\s*\[([^\]]+)\]/);
+    if (match) {
+      for (const token of match[1].split(',')) {
+        const name = cleanFontToken(token);
+        if (name) {
+          styleNames.add(name);
+        }
+      }
+      continue;
+    }
+
+    match = line.match(/\\definefontalternative\s*\[([^\]]+)\]/);
+    if (match) {
+      for (const token of match[1].split(',')) {
+        const name = cleanFontToken(token);
+        if (name) {
+          alternativeNames.add(name);
+        }
+      }
+    }
+  }
+
+  const all = new Set();
+  const sizeSuffixes = ['x', 'xx', 'a', 'b', 'c', 'd'];
+  const expandable = new Set(['tf', 'bf', 'it', 'sl', 'bi', 'bs', 'sc']);
+
+  for (const style of styleNames) {
+    all.add(style);
+  }
+
+  for (const alt of alternativeNames) {
+    all.add(alt);
+    if (expandable.has(alt)) {
+      for (const suffix of sizeSuffixes) {
+        all.add(`${alt}${suffix}`);
+      }
+    }
+  }
+
+  all.add('tx');
+  all.add('txx');
+
+  for (const command of all) {
+    completions.push({
+      label: `\\${command}`,
+      kind: vscode.CompletionItemKind.Function,
+      insertText: command,
+      sortWeight: '05'
+    });
+  }
+
+  return completions;
+}
+
+function loadFontCompletions(xmlPath) {
+  const texContextRoot = path.dirname(path.dirname(path.dirname(xmlPath)));
+  const candidates = [
+    path.join(texContextRoot, 'base', 'mkiv', 'font-ini.mkvi'),
+    path.join(texContextRoot, 'base', 'mkiv', 'font-pre.mkiv'),
+    path.join(texContextRoot, 'base', 'mkxl', 'font-ini.mklx'),
+    path.join(texContextRoot, 'base', 'mkxl', 'font-pre.mkxl')
+  ];
+
+  const seen = new Set();
+  const completions = [];
+  for (const candidate of candidates) {
+    for (const item of parseFontSourceFile(candidate)) {
+      if (seen.has(item.label)) {
+        continue;
+      }
+      seen.add(item.label);
+      completions.push(item);
+    }
+  }
+
+  return completions;
+}
+
+function getCommandEntry(commandName) {
+  if (cache.commandMap.has(commandName)) {
+    return cache.commandMap.get(commandName);
+  }
+
+  if (commandName.startsWith('start') && commandName.length > 5) {
+    const baseName = commandName.slice(5);
+    if (cache.commandMap.has(baseName)) {
+      return cache.commandMap.get(baseName);
+    }
+
+    const setupName = `setup${baseName}`;
+    if (cache.commandMap.has(setupName)) {
+      return cache.commandMap.get(setupName);
+    }
+  }
+
+  return null;
+}
+
+function resolveXmlPath(configuredXmlPath) {
+  const configured = String(configuredXmlPath || '').trim();
+  if (configured && fs.existsSync(configured)) {
+    return configured;
+  }
+
+  const candidates = [];
+  const localAppData = process.env.LOCALAPPDATA || '';
+  const userProfile = process.env.USERPROFILE || '';
+
+  if (localAppData) {
+    candidates.push(path.join(localAppData, 'Packages', '7614MasterDevelopment.ConTeXtIDE_6y3v46cbhs1ne', 'LocalState', 'tex', 'texmf-context', 'tex', 'context', 'interface', 'mkiv', 'context-en.xml'));
+  }
+
+  const packageRoots = [
+    localAppData ? path.join(localAppData, 'Packages') : '',
+    userProfile ? path.join(userProfile, 'AppData', 'Local', 'Packages') : ''
+  ].filter(Boolean);
+
+  for (const packageRoot of packageRoots) {
+    if (!fs.existsSync(packageRoot)) {
+      continue;
+    }
+
+    let dirs = [];
+    try {
+      dirs = fs.readdirSync(packageRoot, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory() && entry.name.toLowerCase().includes('contextide'))
+        .map((entry) => entry.name);
+    } catch (err) {
+      dirs = [];
+    }
+
+    for (const dir of dirs) {
+      candidates.push(path.join(packageRoot, dir, 'LocalState', 'tex', 'texmf-context', 'tex', 'context', 'interface', 'mkiv', 'context-en.xml'));
+    }
+  }
+
+  for (const candidate of candidates) {
+    if (candidate && fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+
+  return configured;
+}
+
+function loadData(configuredXmlPath) {
+  const xmlPath = resolveXmlPath(configuredXmlPath);
+  if (!xmlPath) {
+    cache = { xmlPath: '', commandMap: new Map(), commandCompletions: [], commandArgumentSpecs: new Map(), parameterValueDefaults: new Map() };
+    return;
+  }
+
+  if (cache.xmlPath === xmlPath && cache.commandCompletions.length > 0) {
+    return;
+  }
+
+  let xmlText = '';
+  try {
+    xmlText = fs.readFileSync(xmlPath, 'utf8');
+  } catch (err) {
+    vscode.window.showWarningMessage(`ConTeXt IntelliSense: Could not read XML file: ${xmlPath}. Set contextIntellisense.xmlPath in settings.`);
+    cache = { xmlPath, commandMap: new Map(), commandCompletions: [], commandArgumentSpecs: new Map(), parameterValueDefaults: new Map() };
+    return;
+  }
+
+  const parsed = parseCommandMap(xmlText);
+  const fontCompletions = loadFontCompletions(xmlPath);
+  cache = {
+    xmlPath,
+    commandMap: parsed.commandMap,
+    commandCompletions: parsed.commandCompletions.concat(fontCompletions),
+    commandArgumentSpecs: parsed.commandArgumentSpecs,
+    parameterValueDefaults: new Map(Array.from(parsed.commandMap.entries()).map(([name, entry]) => [name, entry.parameterValueDefaults || new Map()]))
+  };
+}
+
+function getCommandForBracketContext(linePrefix) {
+  const m = linePrefix.match(/\\([A-Za-z@]+)\[[^\]]*$/);
+  return m ? m[1] : null;
+}
+
+function getBracketInvocationContext(linePrefix) {
+  const m = linePrefix.match(/\\([A-Za-z@]+)((?:\[[^\]]*\])*)(\[[^\]]*)$/);
+  if (!m) {
+    return null;
+  }
+
+  const commandName = m[1];
+  const completedBrackets = m[2] || '';
+  const openBracketPart = m[3] || '';
+  const currentSegment = openBracketPart.startsWith('[') ? openBracketPart.slice(1) : openBracketPart;
+  const completedCount = (completedBrackets.match(/\[/g) || []).length;
+
+  return {
+    commandName,
+    argumentIndex: completedCount,
+    currentSegment
+  };
+}
+
+function getCommandArgumentSpec(commandName, argumentIndex) {
+  const specs = cache.commandArgumentSpecs.get(commandName);
+  if (!specs) {
+    return null;
+  }
+
+  const bracketSpecs = specs.filter(spec => spec.delimiter === 'bracket');
+  if (argumentIndex < 0 || argumentIndex >= bracketSpecs.length) {
+    return null;
+  }
+  return bracketSpecs[argumentIndex];
+}
+
+function getCommandSignatureSpecs(commandName) {
+  return cache.commandArgumentSpecs.get(commandName) || [];
+}
+
+function getActiveParameterIndex(commandName, linePrefix) {
+  const specs = getCommandSignatureSpecs(commandName).filter(spec => spec.kind !== 'content');
+  if (specs.length === 0) {
+    return 0;
+  }
+
+  const commandToken = `\\${commandName}`;
+  const commandIndex = linePrefix.lastIndexOf(commandToken);
+  if (commandIndex < 0) {
+    return 0;
+  }
+
+  const suffix = linePrefix.slice(commandIndex + commandToken.length);
+  let pos = 0;
+
+  for (let i = 0; i < specs.length; i++) {
+    const spec = specs[i];
+    const delimiter = getDelimiterInfo(spec.delimiter);
+
+    while (pos < suffix.length && /\s/.test(suffix[pos]) && spec.delimiter !== 'none') {
+      pos += 1;
+    }
+
+    if (pos >= suffix.length) {
+      return i;
+    }
+
+    if (spec.delimiter === 'none') {
+      return i;
+    }
+
+    if (suffix[pos] !== delimiter.open) {
+      return i;
+    }
+
+    pos += 1;
+    let depth = 1;
+    while (pos < suffix.length && depth > 0) {
+      const char = suffix[pos];
+      if (char === delimiter.open) {
+        depth += 1;
+      } else if (char === delimiter.close) {
+        depth -= 1;
+      }
+      pos += 1;
+    }
+
+    if (depth > 0) {
+      return i;
+    }
+  }
+
+  return Math.max(specs.length - 1, 0);
+}
+
+function getActiveAssignmentKey(currentSegment) {
+  const rawSegment = currentSegment || '';
+  const segmentMatch = rawSegment.match(/(?:^|,)\,?\s*([^,\]]*)$/);
+  const segment = segmentMatch ? segmentMatch[1] : rawSegment;
+  const eqIndex = segment.indexOf('=');
+  if (eqIndex < 0) {
+    return '';
+  }
+
+  return segment.slice(0, eqIndex).trim();
+}
+
+function createCommandItems(prefixPart) {
+  const lower = (prefixPart || '').toLowerCase();
+  const items = [];
+
+  for (const completion of cache.commandCompletions) {
+    const label = completion.label;
+    const compareText = label.startsWith('\\') ? label.slice(1) : label;
+    if (!compareText.toLowerCase().startsWith(lower)) {
+      continue;
+    }
+
+    const item = new vscode.CompletionItem(label, completion.kind);
+    item.insertText = completion.insertText;
+    item.sortText = `${completion.sortWeight}_${compareText}`;
+    item.filterText = label;
+    const signatureParts = buildSignatureParts(compareText, getCommandSignatureSpecs(compareText));
+    item.detail = signatureParts.label || 'ConTeXt IntelliSense';
+    item.documentation = undefined;
+
+    items.push(item);
+  }
+
+  return items;
+}
+
+function createKeywordAndParameterItems(commandName, currentSegment, argumentIndex = 0) {
+  const entry = getCommandEntry(commandName);
+  if (!entry) {
+    return [];
+  }
+
+  const argumentSpec = getCommandArgumentSpec(commandName, argumentIndex);
+  if (argumentSpec && argumentSpec.kind === 'keywords') {
+    const segment = (currentSegment || '').trim();
+    if (segment.startsWith('\\')) {
+      return createCommandItems(segment.slice(1));
+    }
+
+    const values = argumentSpec.keywordValues || [];
+    if (values.length === 0) {
+      return [];
+    }
+
+    const out = [];
+    for (const value of values) {
+      if (segment && !value.toLowerCase().startsWith(segment.toLowerCase())) {
+        continue;
+      }
+      const item = new vscode.CompletionItem(value, vscode.CompletionItemKind.Keyword);
+      item.insertText = value;
+      item.sortText = `0_${value}`;
+      item.filterText = value;
+      out.push(item);
+    }
+    return out;
+  }
+
+  if (argumentSpec && argumentSpec.kind !== 'assignments') {
+    return [];
+  }
+
+  function createAssignmentItems(filterSegment = '') {
+    const out = [];
+
+    for (const parameter of entry.parameters) {
+      const label = `${parameter}=`;
+      const item = new vscode.CompletionItem(label, vscode.CompletionItemKind.Field);
+      item.insertText = new vscode.SnippetString(`${parameter}=$0`);
+      item.command = {
+        command: 'editor.action.triggerSuggest',
+        title: 'Trigger suggest for parameter values'
+      };
+      item.sortText = `1_${label}`;
+      item.filterText = label;
+      out.push(item);
+    }
+
+    const normalizedFilter = (filterSegment || '').trim().toLowerCase();
+    if (normalizedFilter) {
+      return out.filter(item => item.label.toString().toLowerCase().startsWith(normalizedFilter));
+    }
+
+    return out;
+  }
+
+  const rawSegment = currentSegment || '';
+  const segment = rawSegment.trim();
+  if (rawSegment.includes('=')) {
+    const eqIndex = rawSegment.indexOf('=');
+    const key = rawSegment.slice(0, eqIndex).trim();
+    const valuePartRaw = rawSegment.slice(eqIndex + 1);
+    const valuePart = valuePartRaw.trim();
+
+    if (/^\s*\\/.test(valuePartRaw)) {
+      return createCommandItems(valuePartRaw.replace(/^\s*\\/, ''));
+    }
+
+    const values = entry.parameterValues.get(key);
+    if (!values || values.size === 0) {
+      // In value position with free-form values, do not show key suggestions.
+      return [];
+    }
+
+    const out = [];
+    for (const value of values) {
+      if (valuePart && !value.toLowerCase().startsWith(valuePart.toLowerCase())) {
+        continue;
+      }
+      const item = new vscode.CompletionItem(value, vscode.CompletionItemKind.Value);
+      item.insertText = value;
+      item.sortText = `0_${value}`;
+      item.filterText = value;
+      out.push(item);
+    }
+
+    return out;
+  }
+
+  if (argumentSpec && argumentSpec.kind === 'assignments') {
+    return createAssignmentItems(segment);
+  }
+
+  const out = [];
+
+  for (const keyword of entry.keywords) {
+    const item = new vscode.CompletionItem(keyword, vscode.CompletionItemKind.Keyword);
+    item.insertText = keyword;
+    item.sortText = `0_${keyword}`;
+    item.filterText = keyword;
+    out.push(item);
+  }
+
+  for (const item of createAssignmentItems('')) {
+    out.push(item);
+  }
+
+  if (segment) {
+    return out.filter(item => item.label.toString().toLowerCase().startsWith(segment.toLowerCase()));
+  }
+
+  return out;
+}
+
+function activate(context) {
+  function getConfiguredXmlPath() {
+    const config = vscode.workspace.getConfiguration('contextIntellisense');
+    return config.get('xmlPath');
+  }
+
+  loadData(getConfiguredXmlPath());
+
+  context.subscriptions.push(vscode.workspace.onDidChangeConfiguration((e) => {
+    if (e.affectsConfiguration('contextIntellisense.xmlPath')) {
+      loadData(getConfiguredXmlPath());
+    }
+  }));
+
+  const selector = { language: 'context.tex', scheme: 'file' };
+  const provider = vscode.languages.registerCompletionItemProvider(
+    selector,
+    {
+      provideCompletionItems(document, position) {
+        if (cache.commandCompletions.length === 0) {
+          return [];
+        }
+
+        const line = document.lineAt(position.line).text;
+        const linePrefix = line.slice(0, position.character);
+
+        const bracketContext = getBracketInvocationContext(linePrefix);
+        if (bracketContext) {
+          const segmentMatch = bracketContext.currentSegment.match(/(?:^|,)\s*([^,\]]*)$/);
+          const currentSegment = segmentMatch ? segmentMatch[1] : '';
+          return createKeywordAndParameterItems(bracketContext.commandName, currentSegment, bracketContext.argumentIndex);
+        }
+
+        const commandMatch = linePrefix.match(/\\([A-Za-z@]*)$/);
+        if (commandMatch) {
+          return createCommandItems(commandMatch[1]);
+        }
+
+        return [];
+      }
+    },
+    '[',
+    ',',
+    '=',
+    ' ',
+    '\\'
+  );
+
+  context.subscriptions.push(provider);
+
+  const signatureProvider = vscode.languages.registerSignatureHelpProvider(
+    selector,
+    {
+      provideSignatureHelp(document, position) {
+        const line = document.lineAt(position.line).text;
+        const linePrefix = line.slice(0, position.character);
+        const commandMatch = /\\([A-Za-z@]+)(?:[^\\]*)$/.exec(linePrefix);
+        if (!commandMatch) {
+          return null;
+        }
+
+        const commandName = commandMatch[1];
+        const specs = getCommandSignatureSpecs(commandName).filter(spec => spec.kind !== 'content');
+        if (specs.length === 0) {
+          return null;
+        }
+
+        const activeParameterIndex = Math.min(getActiveParameterIndex(commandName, linePrefix), Math.max(specs.length - 1, 0));
+        const bracketContext = getBracketInvocationContext(linePrefix);
+        const activeAssignmentKey = bracketContext && bracketContext.commandName === commandName
+          ? getActiveAssignmentKey(bracketContext.currentSegment)
+          : '';
+        const signatureParts = buildSignatureParts(commandName, specs, {
+          activeParameterIndex,
+          activeAssignmentKey
+        });
+        const signature = new vscode.SignatureInformation(signatureParts.label);
+        signature.parameters = signatureParts.parameters.map(parameter => new vscode.ParameterInformation(parameter.label, parameter.documentation));
+
+        const help = new vscode.SignatureHelp();
+        help.signatures = [signature];
+        help.activeSignature = 0;
+        help.activeParameter = Math.min(activeParameterIndex, Math.max(signature.parameters.length - 1, 0));
+        return help;
+      }
+    },
+    '[',
+    '{',
+    ',',
+    '=',
+    ' '
+  );
+
+  context.subscriptions.push(signatureProvider);
+}
+
+function deactivate() {}
+
+module.exports = {
+  activate,
+  deactivate
+};

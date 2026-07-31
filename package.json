@@ -1,0 +1,240 @@
+{
+  "name": "context-intellisense",
+  "displayName": "ConTeXt IntelliSense",
+  "description": "ConTeXt syntax highlighting plus context-aware completions with command signatures and key-value hints.",
+  "version": "1.0.10",
+  "publisher": "wdev",
+  "scripts": {
+    "build-vsix": "node ./build-vsix.js",
+    "install-vsix": "node ./install-vsix.js"
+  },
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "main": "./extension.js",
+  "categories": [
+    "Programming Languages"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "context.tex",
+        "aliases": [
+          "ConTeXt TEX"
+        ],
+        "extensions": [
+          ".mkil",
+          ".mkiv",
+          ".mkix",
+          ".mklx",
+          ".mkvi",
+          ".mkxi",
+          ".mkxl",
+          ".tex"
+        ],
+        "configuration": "./settings/context-settings-tex.json"
+      },
+      {
+        "id": "context.mps",
+        "aliases": [
+          "ConTeXt MetaFun"
+        ],
+        "extensions": [
+          ".mp",
+          ".mpii",
+          ".mpiv",
+          ".mpxl"
+        ],
+        "configuration": "./settings/context-settings-mps.json"
+      },
+      {
+        "id": "context.lua",
+        "aliases": [
+          "ConTeXt Lua"
+        ],
+        "configuration": "./settings/context-settings-lua.json"
+      },
+      {
+        "id": "context.cld",
+        "aliases": [
+          "ConTeXt CLD"
+        ],
+        "extensions": [
+          ".cld",
+          ".lfg",
+          ".lmt",
+          ".lua",
+          ".luc",
+          ".lui",
+          ".luj",
+          ".lum",
+          ".luv",
+          ".tma",
+          ".tuc"
+        ],
+        "configuration": "./settings/context-settings-cld.json"
+      },
+      {
+        "id": "context.xml",
+        "aliases": [
+          "ConTeXt XML"
+        ],
+        "extensions": [
+          ".ctx",
+          ".dtd",
+          ".exa",
+          ".export",
+          ".fo",
+          ".htm",
+          ".html",
+          ".lmx",
+          ".rlb",
+          ".rlg",
+          ".rlv",
+          ".rng",
+          ".svg",
+          ".xfdf",
+          ".xhtml",
+          ".xml",
+          ".xsd",
+          ".xsl",
+          ".xslt",
+          ".xul"
+        ],
+        "configuration": "./settings/context-settings-xml.json"
+      },
+      {
+        "id": "context.bibtex",
+        "aliases": [
+          "ConTeXt bibTeX"
+        ],
+        "extensions": [
+          ".bib",
+          ".btx"
+        ],
+        "configuration": "./settings/context-settings-bibtex.json"
+      },
+      {
+        "id": "context.sql",
+        "aliases": [
+          "ConTeXt SQL"
+        ],
+        "extensions": [
+          ".sql"
+        ],
+        "configuration": "./settings/context-settings-sql.json"
+      },
+      {
+        "id": "context.bnf",
+        "aliases": [
+          "ConTeXt BNF"
+        ],
+        "extensions": [
+          ".bnf"
+        ],
+        "configuration": "./settings/context-settings-bnf.json"
+      },
+      {
+        "id": "context.cpp",
+        "aliases": [
+          "ConTeXt C"
+        ],
+        "extensions": [
+          ".c",
+          ".cpp",
+          ".h",
+          ".hpp"
+        ],
+        "configuration": "./settings/context-settings-cpp.json"
+      },
+      {
+        "id": "context.pdf",
+        "aliases": [
+          "ConTeXt PDF"
+        ],
+        "extensions": [
+          ".pdf"
+        ],
+        "configuration": "./settings/context-settings-pdf.json"
+      },
+      {
+        "id": "context.json",
+        "aliases": [
+          "ConTeXt JSON"
+        ],
+        "extensions": [
+          ".json"
+        ],
+        "configuration": "./settings/context-settings-json.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "context.tex",
+        "scopeName": "source.context.tex",
+        "path": "./syntaxes/context-syntax-tex.json"
+      },
+      {
+        "language": "context.mps",
+        "scopeName": "source.context.mps",
+        "path": "./syntaxes/context-syntax-mps.json"
+      },
+      {
+        "language": "context.lua",
+        "scopeName": "source.context.lua",
+        "path": "./syntaxes/context-syntax-lua.json"
+      },
+      {
+        "language": "context.cld",
+        "scopeName": "source.context.cld",
+        "path": "./syntaxes/context-syntax-cld.json"
+      },
+      {
+        "language": "context.xml",
+        "scopeName": "source.context.xml",
+        "path": "./syntaxes/context-syntax-xml.json"
+      },
+      {
+        "language": "context.bibtex",
+        "scopeName": "source.context.bibtex",
+        "path": "./syntaxes/context-syntax-bibtex.json"
+      },
+      {
+        "language": "context.sql",
+        "scopeName": "source.context.sql",
+        "path": "./syntaxes/context-syntax-sql.json"
+      },
+      {
+        "language": "context.bnf",
+        "scopeName": "source.context.bnf",
+        "path": "./syntaxes/context-syntax-bnf.json"
+      },
+      {
+        "language": "context.cpp",
+        "scopeName": "source.context.cpp",
+        "path": "./syntaxes/context-syntax-cpp.json"
+      },
+      {
+        "language": "context.pdf",
+        "scopeName": "source.context.pdf",
+        "path": "./syntaxes/context-syntax-pdf.json"
+      },
+      {
+        "language": "context.json",
+        "scopeName": "source.context.json",
+        "path": "./syntaxes/context-syntax-json.json"
+      }
+    ],
+    "configuration": {
+      "title": "ConTeXt IntelliSense",
+      "properties": {
+        "contextIntellisense.xmlPath": {
+          "type": "string",
+          "default": "",
+          "description": "Absolute path to context-en.xml used to build completion lists."
+        }
+      }
+    }
+  },
+  "license": "MIT"
+}
