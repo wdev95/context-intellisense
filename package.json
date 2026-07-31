@@ -2,7 +2,7 @@
   "name": "context-intellisense",
   "displayName": "ConTeXt IntelliSense",
   "description": "ConTeXt syntax highlighting plus context-aware completions with command signatures and key-value hints.",
-  "version": "1.0.12",
+  "version": "1.0.13",
   "publisher": "wdev",
   "scripts": {
     "build-vsix": "node ./build-vsix.js",
