@@ -2,6 +2,7 @@
   "name": "context-intellisense",
   "displayName": "ConTeXt IntelliSense",
   "description": "ConTeXt syntax highlighting plus context-aware completions with command signatures and key-value hints.",
+  "icon": "icon.png",
   "version": "1.0.33",
   "publisher": "wdev",
   "repository": {

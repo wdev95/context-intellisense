@@ -6,6 +6,9 @@
 # Local artifacts
 *.vsix
 
+# Keep the editable SVG source in Git, but only ship the Marketplace-safe PNG.
+*.svg
+
 # Build and release helper scripts are not needed inside the extension package
 build-vsix.js
 install-vsix.js
