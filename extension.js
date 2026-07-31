@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const cp = require('child_process');
 const vscode = require('vscode');
 
 let cache = {
@@ -189,7 +190,16 @@ function buildSignatureParts(commandName, argumentSpecs, options = {}) {
 
     if (spec.kind === 'assignments') {
       const parameterRows = [];
-      for (const parameterName of uniqueValues(spec.parameterNames || [])) {
+      if (spec.allowsArbitraryKeys) {
+        parameterRows.push(['KEY', 'VALUE']);
+      }
+
+      const specParameterNames = uniqueValues(spec.parameterNames || []);
+      const fallbackParameterNames = (!spec.allowsArbitraryKeys && specParameterNames.length === 0)
+        ? (entry ? uniqueValues(Array.from(entry.parameters || [])) : [])
+        : [];
+      const parameterNames = specParameterNames.length > 0 ? specParameterNames : fallbackParameterNames;
+      for (const parameterName of parameterNames) {
         if (activeAssignmentKey && specIndex === activeParameterIndex && parameterName !== activeAssignmentKey) {
           continue;
         }
@@ -345,11 +355,17 @@ function parseCommandMap(xmlText) {
       if (kind === 'assignments') {
         const parameterNames = [];
         const parameterTypes = new Map();
-        const parameterRe = /<cd:parameter\b([^>]*)>([\s\S]*?)<\/cd:parameter>/g;
+        let hasParameterTags = false;
+        let allowsArbitraryKeys = false;
+        const parameterRe = /<cd:parameter\b([^>]*?)(?:\/\>|>([\s\S]*?)<\/cd:parameter>)/g;
         let pm;
         while ((pm = parameterRe.exec(body)) !== null) {
+          hasParameterTags = true;
           const pAttrs = parseAttributes(pm[1]);
           const parameterName = (pAttrs.name || '').trim();
+          if (parameterName === 'cd:key') {
+            allowsArbitraryKeys = true;
+          }
           if (parameterName && parameterName !== 'cd:key') {
             parameterNames.push(parameterName);
             if (!parameterTypes.has(parameterName)) {
@@ -369,7 +385,7 @@ function parseCommandMap(xmlText) {
           }
         }
 
-        out.push({ kind, optional, delimiter, list, parameterNames, parameterTypes });
+        out.push({ kind, optional, delimiter, list, parameterNames, parameterTypes, hasParameterTags, allowsArbitraryKeys });
         continue;
       }
 
@@ -1056,8 +1072,9 @@ function resolveXmlPath(configuredXmlPath) {
   return configured;
 }
 
-function loadData(configuredXmlPath) {
-  const xmlPath = resolveXmlPath(configuredXmlPath);
+function loadData(configuredTexRootPath, configuredXmlPath) {
+  const texRootPath = resolveTexRootPath(configuredTexRootPath, configuredXmlPath);
+  const xmlPath = resolveXmlPathFromTexRoot(texRootPath) || resolveXmlPath(configuredXmlPath);
   if (!xmlPath) {
     cache = { xmlPath: '', commandMap: new Map(), commandCompletions: [], commandArgumentSpecs: new Map(), parameterValueDefaults: new Map() };
     return;
@@ -1071,7 +1088,7 @@ function loadData(configuredXmlPath) {
   try {
     xmlText = fs.readFileSync(xmlPath, 'utf8');
   } catch (err) {
-    vscode.window.showWarningMessage(`ConTeXt IntelliSense: Could not read XML file: ${xmlPath}. Set contextIntellisense.xmlPath in settings.`);
+    vscode.window.showWarningMessage(`ConTeXt IntelliSense: Could not read XML file: ${xmlPath}. Set contextIntellisense.texRootPath in settings.`);
     cache = { xmlPath, commandMap: new Map(), commandCompletions: [], commandArgumentSpecs: new Map(), parameterValueDefaults: new Map() };
     return;
   }
@@ -1259,17 +1276,25 @@ function createKeywordAndParameterItems(commandName, currentSegment, argumentInd
   function createAssignmentItems(filterSegment = '') {
     const out = [];
 
-    for (const parameter of entry.parameters) {
-      const label = `${parameter}=`;
-      const item = new vscode.CompletionItem(label, vscode.CompletionItemKind.Field);
-      item.insertText = new vscode.SnippetString(`${parameter}=$0`);
-      item.command = {
-        command: 'editor.action.triggerSuggest',
-        title: 'Trigger suggest for parameter values'
-      };
-      item.sortText = `1_${label}`;
-      item.filterText = label;
-      out.push(item);
+    if (!(argumentSpec && argumentSpec.kind === 'assignments' && argumentSpec.allowsArbitraryKeys)) {
+      const specParameterNames = argumentSpec ? uniqueValues(argumentSpec.parameterNames || []) : [];
+      const fallbackParameterNames = (argumentSpec && argumentSpec.kind === 'assignments' && specParameterNames.length === 0 && !argumentSpec.allowsArbitraryKeys)
+        ? uniqueValues(Array.from(entry.parameters || []))
+        : [];
+      const parameterNames = specParameterNames.length > 0 ? specParameterNames : fallbackParameterNames;
+
+      for (const parameter of parameterNames) {
+        const label = `${parameter}=`;
+        const item = new vscode.CompletionItem(label, vscode.CompletionItemKind.Field);
+        item.insertText = new vscode.SnippetString(`${parameter}=$0`);
+        item.command = {
+          command: 'editor.action.triggerSuggest',
+          title: 'Trigger suggest for parameter values'
+        };
+        item.sortText = `1_${label}`;
+        item.filterText = label;
+        out.push(item);
+      }
     }
 
     const normalizedFilter = (filterSegment || '').trim().toLowerCase();
@@ -1290,6 +1315,11 @@ function createKeywordAndParameterItems(commandName, currentSegment, argumentInd
 
     if (/^\s*\\/.test(valuePartRaw)) {
       return createCommandItems(valuePartRaw.replace(/^\s*\\/, ''));
+    }
+
+    if (argumentSpec && argumentSpec.kind === 'assignments' && argumentSpec.allowsArbitraryKeys) {
+      // Arbitrary assignments intentionally do not suggest constrained values.
+      return [];
     }
 
     const values = entry.parameterValues.get(key);
@@ -1338,47 +1368,500 @@ function createKeywordAndParameterItems(commandName, currentSegment, argumentInd
   return out;
 }
 
+function isConTeXtTexFilePath(filePath) {
+  const ext = path.extname(String(filePath || '')).toLowerCase();
+  return ['.tex', '.mkiv', '.mkxl', '.mkvi', '.mkil', '.mkix', '.mkxi', '.mklx'].includes(ext);
+}
+
+async function applyContextLanguageToOpenDocuments() {
+  const updates = [];
+  for (const document of vscode.workspace.textDocuments) {
+    if (!document || document.uri.scheme !== 'file') {
+      continue;
+    }
+
+    if (!isConTeXtTexFilePath(document.uri.fsPath)) {
+      continue;
+    }
+
+    if (document.languageId === 'context.tex') {
+      continue;
+    }
+
+    updates.push(vscode.languages.setTextDocumentLanguage(document, 'context.tex'));
+  }
+
+  if (updates.length > 0) {
+    await Promise.allSettled(updates);
+  }
+}
+
+function isExistingDirectory(folderPath) {
+  return !!folderPath && fs.existsSync(folderPath) && fs.statSync(folderPath).isDirectory();
+}
+
+function isExistingFile(filePath) {
+  return !!filePath && fs.existsSync(filePath) && fs.statSync(filePath).isFile();
+}
+
+function resolveConfiguredPath(inputPath, workspaceFolderPath = '') {
+  const value = String(inputPath || '').trim();
+  if (!value) {
+    return '';
+  }
+
+  if (path.isAbsolute(value)) {
+    return value;
+  }
+
+  if (workspaceFolderPath) {
+    return path.resolve(workspaceFolderPath, value);
+  }
+
+  return path.resolve(value);
+}
+
+function collectWorkspaceTemporaryFiles(workspaceFolders) {
+  const disposableExtensions = new Set(['.log', '.tuc', '.pgf', '.synctex']);
+  const files = new Set();
+
+  for (const workspaceFolder of workspaceFolders || []) {
+    if (!workspaceFolder || !workspaceFolder.uri || workspaceFolder.uri.scheme !== 'file') {
+      continue;
+    }
+
+    const rootPath = path.resolve(workspaceFolder.uri.fsPath);
+    if (!isExistingDirectory(rootPath)) {
+      continue;
+    }
+
+    const pendingFolders = [rootPath];
+    while (pendingFolders.length > 0) {
+      const folderPath = pendingFolders.pop();
+      let entries;
+      try {
+        entries = fs.readdirSync(folderPath, { withFileTypes: true });
+      } catch (error) {
+        continue;
+      }
+
+      const fileNames = new Set(
+        entries.filter(entry => entry.isFile()).map(entry => entry.name.toLowerCase())
+      );
+
+      for (const entry of entries) {
+        const fullPath = path.resolve(folderPath, entry.name);
+        const relativePath = path.relative(rootPath, fullPath);
+        if (relativePath === '..' || relativePath.startsWith(`..${path.sep}`) || path.isAbsolute(relativePath)) {
+          continue;
+        }
+
+        // Deliberately do not follow directory symlinks or junctions.
+        if (entry.isDirectory()) {
+          pendingFolders.push(fullPath);
+          continue;
+        }
+        if (!entry.isFile()) {
+          continue;
+        }
+
+        const extension = path.extname(entry.name).toLowerCase();
+        if (disposableExtensions.has(extension)) {
+          files.add(fullPath);
+          continue;
+        }
+
+        if (extension === '.pdf') {
+          const texFileName = `${path.basename(entry.name, extension)}.tex`.toLowerCase();
+          if (fileNames.has(texFileName)) {
+            files.add(fullPath);
+          }
+        }
+      }
+    }
+  }
+
+  return Array.from(files).sort((a, b) => a.localeCompare(b));
+}
+
+function searchForFile(rootPath, targetNames, maxDepth = 6) {
+  const normalizedTargets = new Set((targetNames || []).map((name) => String(name).toLowerCase()));
+  if (!isExistingDirectory(rootPath)) {
+    return '';
+  }
+
+  const queue = [{ folderPath: rootPath, depth: 0 }];
+  while (queue.length > 0) {
+    const current = queue.shift();
+    if (!current || current.depth > maxDepth) {
+      continue;
+    }
+
+    let entries = [];
+    try {
+      entries = fs.readdirSync(current.folderPath, { withFileTypes: true });
+    } catch (error) {
+      continue;
+    }
+
+    for (const entry of entries) {
+      const fullPath = path.join(current.folderPath, entry.name);
+      if (entry.isFile() && normalizedTargets.has(entry.name.toLowerCase())) {
+        return fullPath;
+      }
+      if (entry.isDirectory()) {
+        queue.push({ folderPath: fullPath, depth: current.depth + 1 });
+      }
+    }
+  }
+
+  return '';
+}
+
+function resolveTexRootPath(configuredTexRootPath, legacyXmlPath = '') {
+  const configured = resolveConfiguredPath(configuredTexRootPath);
+  if (isExistingDirectory(configured)) {
+    return configured;
+  }
+
+  const legacy = resolveConfiguredPath(legacyXmlPath);
+  if (isExistingFile(legacy)) {
+    let current = path.dirname(legacy);
+    for (let i = 0; i < 8 && current && current !== path.dirname(current); i++) {
+      const discovered = resolveXmlPathFromTexRoot(current);
+      if (discovered) {
+        return current;
+      }
+      current = path.dirname(current);
+    }
+  }
+
+  return configured;
+}
+
+function resolveXmlPathFromTexRoot(texRootPath) {
+  const root = resolveConfiguredPath(texRootPath);
+  if (!isExistingDirectory(root)) {
+    return '';
+  }
+
+  const candidates = [
+    root,
+    path.join(root, 'tex'),
+    path.join(root, 'tex', 'context'),
+    path.join(root, 'tex', 'context', 'interface'),
+    path.join(root, 'tex', 'context', 'interface', 'mkiv'),
+    path.join(root, 'texmf-context', 'tex', 'context', 'interface', 'mkiv'),
+    path.join(root, 'share', 'texmf-context', 'tex', 'context', 'interface', 'mkiv')
+  ];
+
+  for (const candidate of candidates) {
+    const resolved = searchForFile(candidate, ['context-en.xml'], 6);
+    if (resolved) {
+      return resolved;
+    }
+  }
+
+  return searchForFile(root, ['context-en.xml'], 7);
+}
+
+function resolveContextExecutableFromTexRoot(texRootPath) {
+  const root = resolveConfiguredPath(texRootPath);
+  if (!isExistingDirectory(root)) {
+    return 'context';
+  }
+
+  const candidateFolders = [
+    root,
+    path.join(root, 'bin'),
+    path.join(root, 'bin', 'windows'),
+    path.join(root, 'bin', 'win32'),
+    path.join(root, 'bin', 'x64'),
+    path.join(root, 'scripts'),
+    path.join(root, 'scripts', 'context'),
+    path.join(root, 'scripts', 'context', 'lua'),
+    path.join(root, 'tex'),
+    path.join(root, 'tex', 'context'),
+    path.join(root, 'tex', 'context', 'interface')
+  ];
+
+  const targetNames = process.platform === 'win32'
+    ? ['context.exe', 'context.cmd', 'context.bat']
+    : ['context', 'context.sh', 'context.lua'];
+
+  for (const folderPath of candidateFolders) {
+    const resolved = searchForFile(folderPath, targetNames, 5);
+    if (resolved) {
+      return resolved;
+    }
+  }
+
+  return searchForFile(root, targetNames, 7) || 'context';
+}
+
+function resolveMainFilePath(configuredMainFilePath, workspaceFolderPath = '') {
+  const resolved = resolveConfiguredPath(configuredMainFilePath, workspaceFolderPath);
+  return isExistingFile(resolved) ? resolved : '';
+}
+
+function hasPdfViewerExtensionInstalled() {
+  return vscode.extensions.all.some((extension) => {
+    const pkg = extension.packageJSON || {};
+    const contributes = pkg.contributes || {};
+    const languages = Array.isArray(contributes.languages) ? contributes.languages : [];
+    const customEditors = Array.isArray(contributes.customEditors) ? contributes.customEditors : [];
+
+    if ((pkg.name && String(pkg.name).toLowerCase().includes('pdf')) || (pkg.displayName && String(pkg.displayName).toLowerCase().includes('pdf'))) {
+      return true;
+    }
+
+    if (languages.some((language) => language && (language.id === 'pdf' || (Array.isArray(language.extensions) && language.extensions.includes('.pdf'))))) {
+      return true;
+    }
+
+    if (customEditors.some((editor) => editor && String(editor.viewType || '').toLowerCase().includes('pdf'))) {
+      return true;
+    }
+
+    return false;
+  });
+}
+
+async function openPdfFile(pdfPath) {
+  const pdfExtension = vscode.extensions.getExtension('tomoki1207.pdf');
+  if (pdfExtension && !pdfExtension.isActive) {
+    try {
+      await pdfExtension.activate();
+    } catch (error) {
+      // Activation failure is non-fatal; the file can still be opened externally.
+    }
+  }
+
+  try {
+    const pdfPreviewConfig = vscode.workspace.getConfiguration('pdf-preview');
+    if (pdfPreviewConfig.get('default.spreadMode') !== 'none') {
+      await pdfPreviewConfig.update('default.spreadMode', 'none', vscode.ConfigurationTarget.Global);
+    }
+  } catch (error) {
+    // Some installs do not register the pdf-preview schema early enough for writes.
+  }
+
+  const pdfUri = vscode.Uri.file(pdfPath);
+  if (hasPdfViewerExtensionInstalled()) {
+    try {
+      await vscode.commands.executeCommand('vscode.open', pdfUri, { viewColumn: vscode.ViewColumn.Beside, preview: false });
+      return true;
+    } catch (error) {
+      // Fall through to external application.
+    }
+  }
+
+  await vscode.env.openExternal(pdfUri);
+  return true;
+}
+
+function isWindowsBatch(commandPath) {
+  return process.platform === 'win32' && /\.(cmd|bat)$/i.test(commandPath);
+}
+
+function runProcessWithOutput(command, args, cwd, outputChannel) {
+  return new Promise((resolve) => {
+    const child = cp.spawn(command, args, {
+      cwd,
+      shell: isWindowsBatch(command),
+      env: process.env
+    });
+
+    child.stdout.on('data', (data) => outputChannel.append(data.toString()));
+    child.stderr.on('data', (data) => outputChannel.append(data.toString()));
+    child.on('error', (error) => resolve({ code: 1, error }));
+    child.on('close', (code) => resolve({ code: code === null ? 1 : code }));
+  });
+}
+
 function activate(context) {
   const suppressPromptKey = 'contextIntellisense.suppressXmlPathPrompt';
+  const texRootStateKey = 'contextIntellisense.texRootPath';
+  const mainFileStateKey = 'contextIntellisense.mainFilePath';
+  const contextLanguageIds = [
+    'context.tex',
+    'context.mps',
+    'context.lua',
+    'context.cld',
+    'context.xml',
+    'context.bibtex',
+    'context.sql',
+    'context.bnf',
+    'context.cpp',
+    'context.pdf',
+    'context.json'
+  ];
 
-  function getConfiguredXmlPath() {
+  const outputChannel = vscode.window.createOutputChannel('ConTeXt IntelliSense');
+  const fileDecorationsEmitter = new vscode.EventEmitter();
+  const codeLensesEmitter = new vscode.EventEmitter();
+  context.subscriptions.push(outputChannel, fileDecorationsEmitter, codeLensesEmitter);
+
+  function getWorkspaceRootPath() {
+    return vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0
+      ? vscode.workspace.workspaceFolders[0].uri.fsPath
+      : '';
+  }
+
+  function getConfiguredTexRootPath() {
+    const config = vscode.workspace.getConfiguration('contextIntellisense');
+    const configuredPath = String(config.get('texRootPath', '') || '').trim();
+    const persistedPath = String(context.globalState.get(texRootStateKey, '') || '').trim();
+    return configuredPath || persistedPath;
+  }
+
+  function getConfiguredLegacyXmlPath() {
     const config = vscode.workspace.getConfiguration('contextIntellisense');
     return config.get('xmlPath');
   }
 
-  function hasUsableXmlPath(configuredXmlPath) {
-    const resolved = resolveXmlPath(configuredXmlPath);
-    return !!resolved && fs.existsSync(resolved);
+  function getConfiguredMainFilePath() {
+    const config = vscode.workspace.getConfiguration('contextIntellisense');
+    return context.workspaceState.get(mainFileStateKey, '')
+      || config.get('mainFilePath')
+      || context.globalState.get(mainFileStateKey, '');
   }
 
-  async function configureXmlPathWithPicker() {
+  function hasUsableTexRoot(configuredTexRootPath) {
+    const resolved = resolveTexRootPath(configuredTexRootPath, getConfiguredLegacyXmlPath());
+    return !!resolved && isExistingDirectory(resolved);
+  }
+
+  function hasConfiguredTexRoot() {
+    return String(getConfiguredTexRootPath() || '').trim().length > 0;
+  }
+
+  function getResolvedTexRootPath() {
+    return resolveTexRootPath(getConfiguredTexRootPath(), getConfiguredLegacyXmlPath());
+  }
+
+  function getResolvedXmlPath() {
+    const texRootPath = getResolvedTexRootPath();
+    return resolveXmlPathFromTexRoot(texRootPath) || resolveXmlPath(getConfiguredLegacyXmlPath());
+  }
+
+  function getResolvedContextExecutable() {
+    return resolveContextExecutableFromTexRoot(getResolvedTexRootPath());
+  }
+
+  function getResolvedMainFilePath() {
+    return resolveMainFilePath(getConfiguredMainFilePath(), getWorkspaceRootPath());
+  }
+
+  function refreshDecorations() {
+    fileDecorationsEmitter.fire();
+    codeLensesEmitter.fire();
+  }
+
+  async function enforceCopilotDisableMode() {
+    const extConfig = vscode.workspace.getConfiguration('contextIntellisense');
+    const mode = String(extConfig.get('copilotDisableMode') || 'global');
+    if (mode === 'off') {
+      return;
+    }
+
+    const copilotConfig = vscode.workspace.getConfiguration('github.copilot');
+    const current = copilotConfig.get('enable');
+    const currentMap = current && typeof current === 'object' && !Array.isArray(current) ? current : {};
+    const nextMap = { ...currentMap };
+
+    if (mode === 'global') {
+      nextMap['*'] = false;
+    }
+
+    for (const languageId of contextLanguageIds) {
+      nextMap[languageId] = false;
+    }
+
+    if (JSON.stringify(currentMap) === JSON.stringify(nextMap)) {
+      return;
+    }
+
+    await copilotConfig.update('enable', nextMap, vscode.ConfigurationTarget.Global);
+
+    if (mode === 'global') {
+      const editorConfig = vscode.workspace.getConfiguration('editor');
+      if (editorConfig.get('inlineSuggest.enabled') !== false) {
+        await editorConfig.update('inlineSuggest.enabled', false, vscode.ConfigurationTarget.Global);
+      }
+    }
+  }
+
+  async function configureTexRootPathWithPicker() {
     const config = vscode.workspace.getConfiguration('contextIntellisense');
     const selected = await vscode.window.showOpenDialog({
-      canSelectFiles: true,
-      canSelectFolders: false,
+      canSelectFiles: false,
+      canSelectFolders: true,
       canSelectMany: false,
-      filters: {
-        XML: ['xml']
-      },
-      openLabel: 'Use this XML file',
-      title: 'Select context-en.xml for ConTeXt IntelliSense'
+      openLabel: 'Use this folder',
+      title: 'Choose ConTeXt distribution tex tree folder'
     });
 
     if (!selected || selected.length === 0) {
       return false;
     }
 
-    const xmlPath = selected[0].fsPath;
-    await config.update('xmlPath', xmlPath, vscode.ConfigurationTarget.Global);
+    const texRootPath = selected[0].fsPath;
+    // Store the path in the extension's persistent state first. This remains
+    // available even when VS Code cannot write the user's settings file.
+    await context.globalState.update(texRootStateKey, texRootPath);
+    try {
+      await config.update('texRootPath', texRootPath, vscode.ConfigurationTarget.Global);
+    } catch (error) {
+      outputChannel.appendLine(`Could not mirror the TeX root path to VS Code settings: ${error.message || error}`);
+    }
     await context.globalState.update(suppressPromptKey, false);
-    loadData(xmlPath);
-    vscode.window.showInformationMessage(`ConTeXt IntelliSense configured with: ${xmlPath}`);
+    loadData(texRootPath, getConfiguredLegacyXmlPath());
+    await applyContextLanguageToOpenDocuments();
+    refreshDecorations();
+
+    const resolvedXmlPath = getResolvedXmlPath();
+    if (!resolvedXmlPath) {
+      vscode.window.showWarningMessage(`ConTeXt IntelliSense configured with TeX root, but context-en.xml was not found below: ${texRootPath}`);
+    } else {
+      vscode.window.showInformationMessage(`ConTeXt IntelliSense configured with TeX root: ${texRootPath}`);
+    }
+    return true;
+  }
+
+  async function configureMainFilePathWithPicker() {
+    const config = vscode.workspace.getConfiguration('contextIntellisense');
+    const selected = await vscode.window.showOpenDialog({
+      canSelectFiles: true,
+      canSelectFolders: false,
+      canSelectMany: false,
+      filters: {
+        TeX: ['tex', 'mkiv', 'mkxl', 'mkvi', 'mkil', 'mkix', 'mkxi', 'mklx']
+      },
+      openLabel: 'Use this file',
+      title: 'Select the main ConTeXt file'
+    });
+
+    if (!selected || selected.length === 0) {
+      return false;
+    }
+
+    const mainFilePath = selected[0].fsPath;
+    await context.workspaceState.update(mainFileStateKey, mainFilePath);
+    await context.globalState.update(mainFileStateKey, mainFilePath);
+    try {
+      await config.update('mainFilePath', mainFilePath, vscode.ConfigurationTarget.Global);
+    } catch (error) {
+      outputChannel.appendLine(`Could not mirror the main file path to VS Code settings: ${error.message || error}`);
+    }
+    refreshDecorations();
+    vscode.window.showInformationMessage(`ConTeXt IntelliSense main file set to: ${mainFilePath}`);
     return true;
   }
 
   async function maybeRunFirstStartSetup(force = false) {
-    const configuredXmlPath = getConfiguredXmlPath();
-    if (!force && hasUsableXmlPath(configuredXmlPath)) {
+    const configuredTexRootPath = getConfiguredTexRootPath();
+    if (!force && hasConfiguredTexRoot()) {
       return;
     }
 
@@ -1387,12 +1870,12 @@ function activate(context) {
       return;
     }
 
-    const actionChoose = 'Choose XML file';
+    const actionChoose = 'Choose ConTeXt distribution tex tree folder';
     const actionNotNow = 'Not now';
     const actionNever = 'Never ask again';
 
     const selection = await vscode.window.showInformationMessage(
-      'ConTeXt IntelliSense needs a path to context-en.xml for completions and signatures.',
+      'ConTeXt IntelliSense needs your ConTeXt distribution tex tree folder for completions, signatures, and compile commands.',
       actionChoose,
       actionNotNow,
       actionNever
@@ -1407,26 +1890,270 @@ function activate(context) {
       return;
     }
 
-    await configureXmlPathWithPicker();
+    await configureTexRootPathWithPicker();
   }
 
-  loadData(getConfiguredXmlPath());
+  async function compileTargetFile(targetFilePath, title) {
+    const resolvedTargetPath = resolveConfiguredPath(targetFilePath, getWorkspaceRootPath());
+    if (!isExistingFile(resolvedTargetPath)) {
+      vscode.window.showErrorMessage(`ConTeXt IntelliSense: target file not found: ${resolvedTargetPath}`);
+      return false;
+    }
 
-  const configureCommand = vscode.commands.registerCommand('contextIntellisense.configureXmlPath', async () => {
+    const contextExecutable = getResolvedContextExecutable();
+    if (!contextExecutable) {
+      vscode.window.showErrorMessage('ConTeXt IntelliSense: could not locate the ConTeXt executable. Set the TeX root folder first.');
+      return false;
+    }
+
+    const cwd = path.dirname(resolvedTargetPath);
+    const pdfPath = path.join(cwd, `${path.basename(resolvedTargetPath, path.extname(resolvedTargetPath))}.pdf`);
+
+    outputChannel.clear();
+    outputChannel.appendLine(`ConTeXt IntelliSense: ${title}`);
+    outputChannel.appendLine(`Working directory: ${cwd}`);
+    outputChannel.appendLine(`Command: ${contextExecutable} ${resolvedTargetPath}`);
+    outputChannel.show(true);
+
+    await vscode.window.withProgress({
+      location: vscode.ProgressLocation.Notification,
+      title,
+      cancellable: false
+    }, async () => {
+      const result = await runProcessWithOutput(contextExecutable, [resolvedTargetPath], cwd, outputChannel);
+      if (result.error) {
+        outputChannel.appendLine(String(result.error.message || result.error));
+        vscode.window.showErrorMessage(`ConTeXt compilation failed: ${result.error.message || result.error}`);
+        return;
+      }
+
+      if (result.code !== 0) {
+        vscode.window.showErrorMessage(`ConTeXt compilation failed with exit code ${result.code}. See the ConTeXt output channel.`);
+        return;
+      }
+
+      outputChannel.appendLine('Compilation completed successfully.');
+      if (isExistingFile(pdfPath)) {
+        await openPdfFile(pdfPath);
+      } else {
+        vscode.window.showWarningMessage(`ConTeXt compilation succeeded, but no PDF was found at: ${pdfPath}`);
+      }
+    });
+
+    return true;
+  }
+
+  async function compileActiveOrProvidedDocument(targetUri) {
+    const uri = targetUri || (vscode.window.activeTextEditor && vscode.window.activeTextEditor.document.uri);
+    if (!uri) {
+      vscode.window.showErrorMessage('ConTeXt IntelliSense: no active document to compile.');
+      return false;
+    }
+
+    const document = await vscode.workspace.openTextDocument(uri);
+    if (document.languageId !== 'context.tex') {
+      vscode.window.showErrorMessage('ConTeXt IntelliSense: compile is only available for ConTeXt TEX files.');
+      return false;
+    }
+
+    if (document.isDirty) {
+      const saved = await document.save();
+      if (!saved) {
+        return false;
+      }
+    }
+
+    return compileTargetFile(document.uri.fsPath, 'Compile current ConTeXt file');
+  }
+
+  async function compileMainFile() {
+    const configuredMainPathRaw = String(getConfiguredMainFilePath() || '').trim();
+    const mainFilePath = getResolvedMainFilePath();
+    if (!mainFilePath) {
+      if (configuredMainPathRaw) {
+        const attemptedPath = resolveConfiguredPath(configuredMainPathRaw, getWorkspaceRootPath());
+        vscode.window.showErrorMessage(`ConTeXt IntelliSense: configured main file not found: ${attemptedPath}`);
+        return false;
+      }
+
+      vscode.window.showErrorMessage('ConTeXt IntelliSense: no main file configured. Use "Set as Main File" in Explorer or "Configure Main File" in the command palette.');
+      return false;
+    }
+
+    return compileTargetFile(mainFilePath, 'Compile main ConTeXt file');
+  }
+
+  async function showPdfForActiveDocument() {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor || editor.document.languageId !== 'context.tex') {
+      vscode.window.showErrorMessage('ConTeXt IntelliSense: no active ConTeXt TEX document to show a PDF for.');
+      return false;
+    }
+
+    const pdfPath = path.join(
+      path.dirname(editor.document.uri.fsPath),
+      `${path.basename(editor.document.uri.fsPath, path.extname(editor.document.uri.fsPath))}.pdf`
+    );
+
+    if (!isExistingFile(pdfPath)) {
+      vscode.window.showWarningMessage(`ConTeXt IntelliSense: PDF not found: ${pdfPath}`);
+      return false;
+    }
+
+    await openPdfFile(pdfPath);
+    return true;
+  }
+
+  async function clearWorkspaceTemporaryFiles() {
+    const workspaceFolders = vscode.workspace.workspaceFolders || [];
+    if (workspaceFolders.length === 0) {
+      vscode.window.showWarningMessage('ConTeXt IntelliSense: no workspace folder is open.');
+      return false;
+    }
+
+    const filesToDelete = collectWorkspaceTemporaryFiles(workspaceFolders);
+    if (filesToDelete.length === 0) {
+      vscode.window.showInformationMessage('ConTeXt IntelliSense: no temporary files found.');
+      return true;
+    }
+
+    const confirmLabel = `Delete ${filesToDelete.length} files`;
+    const selection = await vscode.window.showWarningMessage(
+      `Delete ${filesToDelete.length} temporary ConTeXt files from the workspace and its subfolders?`,
+      { modal: true },
+      confirmLabel
+    );
+    if (selection !== confirmLabel) {
+      return false;
+    }
+
+    const failures = [];
+    for (const filePath of filesToDelete) {
+      try {
+        await fs.promises.unlink(filePath);
+      } catch (error) {
+        failures.push({ filePath, error });
+      }
+    }
+
+    const deletedCount = filesToDelete.length - failures.length;
+    if (failures.length > 0) {
+      outputChannel.appendLine(`Workspace cleanup deleted ${deletedCount} files; ${failures.length} could not be deleted:`);
+      for (const failure of failures) {
+        outputChannel.appendLine(`${failure.filePath}: ${failure.error.message || failure.error}`);
+      }
+      outputChannel.show(true);
+      vscode.window.showWarningMessage(`ConTeXt IntelliSense: deleted ${deletedCount} files; ${failures.length} failed. See the output channel.`);
+      return false;
+    }
+
+    vscode.window.showInformationMessage(`ConTeXt IntelliSense: deleted ${deletedCount} temporary files.`);
+    return true;
+  }
+
+  loadData(getConfiguredTexRootPath(), getConfiguredLegacyXmlPath());
+  void applyContextLanguageToOpenDocuments();
+  void enforceCopilotDisableMode();
+
+  const configureTexRootCommand = vscode.commands.registerCommand('contextIntellisense.configureTexRootPath', async () => {
     await maybeRunFirstStartSetup(true);
   });
-  context.subscriptions.push(configureCommand);
+  context.subscriptions.push(configureTexRootCommand);
+
+  const configureLegacyXmlCommand = vscode.commands.registerCommand('contextIntellisense.configureXmlPath', async () => {
+    await maybeRunFirstStartSetup(true);
+  });
+  context.subscriptions.push(configureLegacyXmlCommand);
+
+  const configureMainFileCommand = vscode.commands.registerCommand('contextIntellisense.configureMainFilePath', async () => {
+    await configureMainFilePathWithPicker();
+  });
+  context.subscriptions.push(configureMainFileCommand);
+
+  const setMainFromExplorerCommand = vscode.commands.registerCommand('contextIntellisense.setMainFileFromExplorer', async (targetUri, selectedUris) => {
+    const candidateUri = (targetUri && targetUri.scheme === 'file')
+      ? targetUri
+      : (Array.isArray(selectedUris) && selectedUris.length > 0
+        ? selectedUris[0]
+        : (vscode.window.activeTextEditor ? vscode.window.activeTextEditor.document.uri : null));
+
+    if (!candidateUri || candidateUri.scheme !== 'file') {
+      vscode.window.showErrorMessage('ConTeXt IntelliSense: please select a ConTeXt TEX file in Explorer.');
+      return;
+    }
+
+    if (!isConTeXtTexFilePath(candidateUri.fsPath)) {
+      vscode.window.showErrorMessage('ConTeXt IntelliSense: selected file is not a ConTeXt TEX file.');
+      return;
+    }
+
+    const mainFilePath = candidateUri.fsPath;
+    const config = vscode.workspace.getConfiguration('contextIntellisense');
+    await context.workspaceState.update(mainFileStateKey, mainFilePath);
+    await context.globalState.update(mainFileStateKey, mainFilePath);
+    try {
+      await config.update('mainFilePath', mainFilePath, vscode.ConfigurationTarget.Global);
+    } catch (error) {
+      outputChannel.appendLine(`Could not mirror the main file path to VS Code settings: ${error.message || error}`);
+    }
+    refreshDecorations();
+    vscode.window.showInformationMessage(`ConTeXt IntelliSense main file set to: ${mainFilePath}`);
+  });
+  context.subscriptions.push(setMainFromExplorerCommand);
+
+  const compileCurrentCommand = vscode.commands.registerCommand('contextIntellisense.compileCurrentFile', async (targetUri) => {
+    await compileActiveOrProvidedDocument(targetUri);
+  });
+  context.subscriptions.push(compileCurrentCommand);
+
+  const compileMainCommand = vscode.commands.registerCommand('contextIntellisense.compileMainFile', async () => {
+    await compileMainFile();
+  });
+  context.subscriptions.push(compileMainCommand);
+
+  const showPdfCommand = vscode.commands.registerCommand('contextIntellisense.showPdfForCurrentFile', async () => {
+    await showPdfForActiveDocument();
+  });
+  context.subscriptions.push(showPdfCommand);
+
+  const clearWorkspaceCommand = vscode.commands.registerCommand('contextIntellisense.clearWorkspace', async () => {
+    await clearWorkspaceTemporaryFiles();
+  });
+  context.subscriptions.push(clearWorkspaceCommand);
+
+  context.subscriptions.push(vscode.window.onDidChangeActiveTextEditor(() => {
+    void applyContextLanguageToOpenDocuments();
+  }));
+
+  context.subscriptions.push(vscode.workspace.onDidOpenTextDocument(() => {
+    void applyContextLanguageToOpenDocuments();
+  }));
 
   void maybeRunFirstStartSetup(false);
 
   context.subscriptions.push(vscode.workspace.onDidChangeConfiguration((e) => {
-    if (e.affectsConfiguration('contextIntellisense.xmlPath')) {
-      loadData(getConfiguredXmlPath());
+    if (e.affectsConfiguration('contextIntellisense.texRootPath') || e.affectsConfiguration('contextIntellisense.xmlPath')) {
+      const configuredPath = String(
+        vscode.workspace.getConfiguration('contextIntellisense').get('texRootPath', '') || ''
+      ).trim();
+      if (configuredPath) {
+        void context.globalState.update(texRootStateKey, configuredPath);
+      }
+      loadData(getConfiguredTexRootPath(), getConfiguredLegacyXmlPath());
 
-      const updatedPath = getConfiguredXmlPath();
-      if (hasUsableXmlPath(updatedPath)) {
+      const updatedPath = getConfiguredTexRootPath();
+      if (hasUsableTexRoot(updatedPath)) {
         void context.globalState.update(suppressPromptKey, false);
       }
+      refreshDecorations();
+    }
+
+    if (e.affectsConfiguration('contextIntellisense.mainFilePath')) {
+      refreshDecorations();
+    }
+
+    if (e.affectsConfiguration('contextIntellisense.copilotDisableMode')) {
+      void enforceCopilotDisableMode();
     }
   }));
 
@@ -1510,6 +2237,27 @@ function activate(context) {
   );
 
   context.subscriptions.push(signatureProvider);
+
+  const fileDecorationProvider = vscode.window.registerFileDecorationProvider({
+    onDidChangeFileDecorations: fileDecorationsEmitter.event,
+    provideFileDecoration(uri) {
+      const mainFilePath = getResolvedMainFilePath();
+      if (!mainFilePath || uri.scheme !== 'file') {
+        return undefined;
+      }
+
+      if (path.resolve(uri.fsPath) !== path.resolve(mainFilePath)) {
+        return undefined;
+      }
+
+      return {
+        badge: '★',
+        tooltip: 'ConTeXt main file',
+        color: new vscode.ThemeColor('list.highlightForeground')
+      };
+    }
+  });
+  context.subscriptions.push(fileDecorationProvider);
 }
 
 function deactivate() {}

@@ -2,8 +2,12 @@
   "name": "context-intellisense",
   "displayName": "ConTeXt IntelliSense",
   "description": "ConTeXt syntax highlighting plus context-aware completions with command signatures and key-value hints.",
-  "version": "1.0.11",
+  "version": "1.0.33",
   "publisher": "wdev",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/wdev95/context-intellisense.git"
+  },
   "scripts": {
     "build-vsix": "node ./build-vsix.js",
     "install-vsix": "node ./install-vsix.js"
@@ -11,6 +15,10 @@
   "engines": {
     "vscode": "^1.80.0"
   },
+  "activationEvents": [
+    "onStartupFinished",
+    "onLanguage:context.tex"
+  ],
   "main": "./extension.js",
   "categories": [
     "Programming Languages"
@@ -18,10 +26,69 @@
   "contributes": {
     "commands": [
       {
-        "command": "contextIntellisense.configureXmlPath",
-        "title": "ConTeXt IntelliSense: Configure XML Path"
+        "command": "contextIntellisense.configureTexRootPath",
+        "title": "ConTeXt IntelliSense: Configure TeX Root Path"
+      },
+      {
+        "command": "contextIntellisense.configureMainFilePath",
+        "title": "ConTeXt IntelliSense: Configure Main File"
+      },
+      {
+        "command": "contextIntellisense.setMainFileFromExplorer",
+        "title": "ConTeXt IntelliSense: Set as Main File"
+      },
+      {
+        "command": "contextIntellisense.compileCurrentFile",
+        "title": "Compile Current",
+        "icon": "$(play)"
+      },
+      {
+        "command": "contextIntellisense.compileMainFile",
+        "title": "Compile Main",
+        "icon": "$(run-all)"
+      },
+      {
+        "command": "contextIntellisense.showPdfForCurrentFile",
+        "title": "Show PDF",
+        "icon": "$(file-pdf)"
+      },
+      {
+        "command": "contextIntellisense.clearWorkspace",
+        "title": "Clear Workspace",
+        "icon": "$(trash)"
       }
     ],
+    "menus": {
+      "explorer/context": [
+        {
+          "command": "contextIntellisense.setMainFileFromExplorer",
+          "group": "navigation@10",
+          "when": "resourceScheme == file && (resourceExtname == .tex || resourceExtname == .mkiv || resourceExtname == .mkxl || resourceExtname == .mkvi || resourceExtname == .mkil || resourceExtname == .mkix || resourceExtname == .mkxi || resourceExtname == .mklx)"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "contextIntellisense.compileCurrentFile",
+          "group": "navigation@10",
+          "when": "resourceScheme == file && resourceLangId == context.tex"
+        },
+        {
+          "command": "contextIntellisense.compileMainFile",
+          "group": "navigation@11",
+          "when": "resourceScheme == file && resourceLangId == context.tex"
+        },
+        {
+          "command": "contextIntellisense.showPdfForCurrentFile",
+          "group": "navigation@12",
+          "when": "resourceScheme == file && resourceLangId == context.tex"
+        },
+        {
+          "command": "contextIntellisense.clearWorkspace",
+          "group": "navigation@13",
+          "when": "resourceScheme == file && resourceLangId == context.tex"
+        }
+      ]
+    },
     "languages": [
       {
         "id": "context.tex",
@@ -231,13 +298,114 @@
         "path": "./syntaxes/context-syntax-json.json"
       }
     ],
+    "configurationDefaults": {
+      "files.associations": {
+        "*.tex": "context.tex",
+        "*.mkil": "context.tex",
+        "*.mkiv": "context.tex",
+        "*.mkix": "context.tex",
+        "*.mklx": "context.tex",
+        "*.mkvi": "context.tex",
+        "*.mkxi": "context.tex",
+        "*.mkxl": "context.tex",
+        "*.lua": "context.lua",
+        "*.cld": "context.cld",
+        "*.tuc": "context.cld"
+      },
+      "github.copilot.enable": {
+        "*": false,
+        "context.tex": false,
+        "context.mps": false,
+        "context.lua": false,
+        "context.cld": false,
+        "context.xml": false,
+        "context.bibtex": false,
+        "context.sql": false,
+        "context.bnf": false,
+        "context.cpp": false,
+        "context.pdf": false,
+        "context.json": false
+      },
+      "[context.tex]": {
+        "editor.quickSuggestions": {
+          "other": true,
+          "comments": false,
+          "strings": true
+        },
+        "editor.quickSuggestionsDelay": 0,
+        "editor.suggestOnTriggerCharacters": true,
+        "editor.wordBasedSuggestions": "off",
+        "editor.suggest.showWords": false,
+        "editor.snippetSuggestions": "none",
+        "editor.suggest.showSnippets": false,
+        "editor.inlineSuggest.enabled": false,
+        "editor.tabCompletion": "on",
+        "editor.suggest.snippetsPreventQuickSuggestions": false
+      },
+      "editor.tokenColorCustomizations": {
+        "textMateRules": [
+          {
+            "scope": [
+              "context.comment"
+            ],
+            "settings": {
+              "foreground": "#8A8A00"
+            }
+          },
+          {
+            "scope": [
+              "context.command",
+              "context.primitive",
+              "context.helper"
+            ],
+            "settings": {
+              "foreground": "#008000",
+              "fontStyle": "bold"
+            }
+          },
+          {
+            "scope": [
+              "context.constant",
+              "context.reserved"
+            ],
+            "settings": {
+              "foreground": "#007A7A"
+            }
+          },
+          {
+            "scope": [
+              "context.grouping",
+              "context.special"
+            ],
+            "settings": {
+              "foreground": "#005A9C"
+            }
+          }
+        ]
+      }
+    },
     "configuration": {
       "title": "ConTeXt IntelliSense",
       "properties": {
-        "contextIntellisense.xmlPath": {
+        "contextIntellisense.texRootPath": {
           "type": "string",
           "default": "",
-          "description": "Absolute path to context-en.xml used to build completion lists."
+          "description": "Absolute path to the root of your ConTeXt / TeX installation. The extension finds context-en.xml and the context executable automatically below this folder."
+        },
+        "contextIntellisense.mainFilePath": {
+          "type": "string",
+          "default": "",
+          "description": "Absolute path to the project main .tex file that should be compiled from the main-file command."
+        },
+        "contextIntellisense.copilotDisableMode": {
+          "type": "string",
+          "enum": [
+            "global",
+            "context-only",
+            "off"
+          ],
+          "default": "global",
+          "markdownDescription": "Controls how this extension enforces Copilot disabling: `global` disables Copilot everywhere, `context-only` disables it for ConTeXt language IDs, `off` does not enforce changes."
         }
       }
     }
