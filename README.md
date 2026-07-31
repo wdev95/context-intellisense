@@ -12,6 +12,12 @@ ConTeXt IntelliSense for VS Code, focused on practical authoring support for Con
 
 ## Configuration
 
+On first start, if no valid XML path can be resolved automatically, the extension opens a setup dialog and lets you pick `context-en.xml` with a file picker.
+
+You can re-open this setup anytime from the command palette with:
+
+- `ConTeXt IntelliSense: Configure XML Path`
+
 Set the following option in VS Code settings:
 
 - `contextIntellisense.xmlPath`: Absolute path to `context-en.xml` used to generate completion and signature data.

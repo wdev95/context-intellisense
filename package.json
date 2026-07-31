@@ -16,6 +16,12 @@
     "Programming Languages"
   ],
   "contributes": {
+    "commands": [
+      {
+        "command": "contextIntellisense.configureXmlPath",
+        "title": "ConTeXt IntelliSense: Configure XML Path"
+      }
+    ],
     "languages": [
       {
         "id": "context.tex",

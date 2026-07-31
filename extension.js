@@ -1339,16 +1339,94 @@ function createKeywordAndParameterItems(commandName, currentSegment, argumentInd
 }
 
 function activate(context) {
+  const suppressPromptKey = 'contextIntellisense.suppressXmlPathPrompt';
+
   function getConfiguredXmlPath() {
     const config = vscode.workspace.getConfiguration('contextIntellisense');
     return config.get('xmlPath');
   }
 
+  function hasUsableXmlPath(configuredXmlPath) {
+    const resolved = resolveXmlPath(configuredXmlPath);
+    return !!resolved && fs.existsSync(resolved);
+  }
+
+  async function configureXmlPathWithPicker() {
+    const config = vscode.workspace.getConfiguration('contextIntellisense');
+    const selected = await vscode.window.showOpenDialog({
+      canSelectFiles: true,
+      canSelectFolders: false,
+      canSelectMany: false,
+      filters: {
+        XML: ['xml']
+      },
+      openLabel: 'Use this XML file',
+      title: 'Select context-en.xml for ConTeXt IntelliSense'
+    });
+
+    if (!selected || selected.length === 0) {
+      return false;
+    }
+
+    const xmlPath = selected[0].fsPath;
+    await config.update('xmlPath', xmlPath, vscode.ConfigurationTarget.Global);
+    await context.globalState.update(suppressPromptKey, false);
+    loadData(xmlPath);
+    vscode.window.showInformationMessage(`ConTeXt IntelliSense configured with: ${xmlPath}`);
+    return true;
+  }
+
+  async function maybeRunFirstStartSetup(force = false) {
+    const configuredXmlPath = getConfiguredXmlPath();
+    if (!force && hasUsableXmlPath(configuredXmlPath)) {
+      return;
+    }
+
+    const isSuppressed = context.globalState.get(suppressPromptKey, false);
+    if (!force && isSuppressed) {
+      return;
+    }
+
+    const actionChoose = 'Choose XML file';
+    const actionNotNow = 'Not now';
+    const actionNever = 'Never ask again';
+
+    const selection = await vscode.window.showInformationMessage(
+      'ConTeXt IntelliSense needs a path to context-en.xml for completions and signatures.',
+      actionChoose,
+      actionNotNow,
+      actionNever
+    );
+
+    if (selection === actionNever) {
+      await context.globalState.update(suppressPromptKey, true);
+      return;
+    }
+
+    if (selection !== actionChoose) {
+      return;
+    }
+
+    await configureXmlPathWithPicker();
+  }
+
   loadData(getConfiguredXmlPath());
+
+  const configureCommand = vscode.commands.registerCommand('contextIntellisense.configureXmlPath', async () => {
+    await maybeRunFirstStartSetup(true);
+  });
+  context.subscriptions.push(configureCommand);
+
+  void maybeRunFirstStartSetup(false);
 
   context.subscriptions.push(vscode.workspace.onDidChangeConfiguration((e) => {
     if (e.affectsConfiguration('contextIntellisense.xmlPath')) {
       loadData(getConfiguredXmlPath());
+
+      const updatedPath = getConfiguredXmlPath();
+      if (hasUsableXmlPath(updatedPath)) {
+        void context.globalState.update(suppressPromptKey, false);
+      }
     }
   }));
 
