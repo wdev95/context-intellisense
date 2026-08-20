@@ -11,7 +11,7 @@
    "include" : "#keyword"
   },
   {
-   "include" : "#buildin"
+   "include" : "#builtin"
   },
   {
    "include" : "#constant"
@@ -59,30 +59,30 @@
  "repository" : {
   "builtin" : {
    "match" : "(xpcall|utf8|unpack|type|tostring|tonumber|table|string|setmetatable|select|require|rawset|rawget|rawequal|print|pcall|pairs|package|os|next|module|math|lpeg|loadfile|load|ipairs|io|getmetatable|file|error|dofile|debug|coroutine|collectgarbage|bit32|assert)(?=[^a-zA-Z])",
-   "name" : "context.plain.reserved.builtin.lua"
+   "name" : "support.function.builtin.lua"
   },
   "constant" : {
    "match" : "(__unm|__tostring|__sub|__pow|__pairs|__newindex|__mul|__mode|__metatable|__lt|__len|__le|__ipairs|__index|__idiv|__gc|__eq|__div|__concat|__close|__call|__add|_VERSION|_M|_G|_ENV|\u005C.\u005C.\u005C.|NaN|<toclose>|<const>)(?=[^a-zA-Z])",
-   "name" : "context.data.reserved.constants.lua"
+   "name" : "constant.lua"
   },
   "csname" : {
    "begin" : "(metapost|metafun|ctx[A-Za-z_]*|context|commands)(?=[^a-zA-Z])",
    "end" : "(?!(\u005Cs*[\u005C.\u005C:]*\u005Cs*[_\u005Cw][_\u005Cw0-9]*))",
-   "name" : "context.user.csname.lua",
+   "name" : "variable.csname.lua",
    "patterns" : [
     {
      "match" : "[\u005C.\u005C:]",
-     "name" : "context.operator.csname.qualifier.lua"
+     "name" : "keyword.operator.csname.qualifier.lua"
     }
    ]
   },
   "goto" : {
    "captures" : {
     "1" : {
-     "name" : "context.keyword.goto.keyword.lua"
+     "name" : "keyword.goto.keyword.lua"
     },
     "2" : {
-     "name" : "context.grouping.goto.target.lua"
+     "name" : "punctuation.definition.goto.target.lua"
     }
    },
    "match" : "(goto)\u005Cs*([_\u005Cw][_\u005Cw0-9]*)"
@@ -90,32 +90,32 @@
   "identifier_keyword" : {
    "captures" : {
     "1" : {
-     "name" : "context.operator.identifier.keyword.lua"
+     "name" : "keyword.operator.identifier.keyword.lua"
     },
     "2" : {
-     "name" : "context.warning.identifier.keyword.lua"
+     "name" : "invalid.identifier.keyword.lua"
     }
    },
    "match" : "\u005Cs*([\u005C.\u005C:])\u005Cs*(while|until|true|then|return|repeat|or|not|nil|local|in|if|function|for|false|end|elseif|else|do|break|and)(?=[^a-zA-Z])"
   },
   "identifier_valid" : {
    "match" : "[_\u005Cw][_\u005Cw0-9]*",
-   "name" : "context.default.identifier.valid.lua"
+   "name" : "variable.identifier.valid.lua"
   },
   "keyword" : {
    "match" : "(while|until|true|then|return|repeat|or|not|nil|local|in|if|function|for|false|end|elseif|else|do|break|and)(?=[^a-zA-Z])",
-   "name" : "context.keyword.reserved.keyword.lua"
+   "name" : "keyword.reserved.keyword.lua"
   },
   "label" : {
    "captures" : {
     "1" : {
-     "name" : "context.keyword.label.open.lua"
+     "name" : "keyword.label.open.lua"
     },
     "2" : {
-     "name" : "context.grouping.label.target.lua"
+     "name" : "punctuation.definition.label.target.lua"
     },
     "3" : {
-     "name" : "context.keyword.label.close.lua"
+     "name" : "keyword.label.close.lua"
     }
    },
    "match" : "(::)([_\u005Cw][_\u005Cw0-9]*)(::)"
@@ -123,34 +123,34 @@
   "longcomment" : {
    "begin" : "--\u005C[\u005C[",
    "end" : "\u005C]\u005C]",
-   "name" : "context.comment.comment.long.lua"
+   "name" : "comment.comment.long.lua"
   },
   "number" : {
    "match" : "[\u005C-]?[0-9]+(\u005C.[0-9]+)?([eEpP]\u005C-?[0-9]+)?",
-   "name" : "context.number.decnumber.lua"
+   "name" : "constant.numeric.decnumber.lua"
   },
   "number_hex" : {
    "match" : "[\u005C-]?0[xX][A-Fa-f0-9]+(\u005C.[A-Fa-f0-9]+)?([eEpP]\u005C-?[A-Fa-f0-9]+)?",
-   "name" : "context.number.hexnumber.lua"
+   "name" : "constant.numeric.hexnumber.lua"
   },
   "operator" : {
    "match" : "\u005C~|}|\u005C||{|\u005C^|\u005C]|\u005C[|>|=|<|;|:|/|\u005C.|\u005C-|,|\u005C+|\u005C*|\u005C)|\u005C(|\u005C'|\u005C%|#",
-   "name" : "context.special.operator.lua"
+   "name" : "punctuation.operator.lua"
   },
   "shortcomment" : {
    "match" : "--.*$\u005Cn?",
-   "name" : "context.comment.comment.short.lua"
+   "name" : "comment.comment.short.lua"
   },
   "string_double" : {
    "captures" : {
     "1" : {
-     "name" : "context.special.doublequoted.open.lua"
+     "name" : "punctuation.doublequoted.open.lua"
     },
     "2" : {
-     "name" : "context.string.doublequoted.text.lua"
+     "name" : "string.doublequoted.text.lua"
     },
     "3" : {
-     "name" : "context.special.doublequoted.close.lua"
+     "name" : "punctuation.doublequoted.close.lua"
     }
    },
    "match" : "(\u0022)((?:\u005C\u005C\u0022|[^\u0022])*)(\u0022)"
@@ -159,49 +159,49 @@
    "begin" : "\u005C[(=*)\u005C[",
    "beginCaptures" : {
     "0" : {
-     "name" : "context.special.string.long.open.lua"
+     "name" : "punctuation.string.long.open.lua"
     }
    },
    "end" : "\u005C](\u005C2)\u005C]",
    "endCaptures" : {
     "0" : {
-     "name" : "context.special.string.long.close.lua"
+     "name" : "punctuation.string.long.close.lua"
     }
    },
-   "name" : "context.string.long.text.lua"
+   "name" : "string.long.text.lua"
   },
   "string_single" : {
    "captures" : {
     "1" : {
-     "name" : "context.special.singlequoted.open.lua"
+     "name" : "punctuation.singlequoted.open.lua"
     },
     "2" : {
-     "name" : "context.string.singlequoted.text.lua"
+     "name" : "string.singlequoted.text.lua"
     },
     "3" : {
-     "name" : "context.special.singlequoted.close.lua"
+     "name" : "punctuation.singlequoted.close.lua"
     }
    },
    "match" : "(')((?:\u005C\u005C'|[^'])*)(')"
   },
   "texcommand" : {
    "match" : "\u005C\u005C[A-Za-z-ÿ@\u005C!\u005C?_]*",
-   "name" : "context.warning.texcommand.lua"
+   "name" : "support.function.texcommand.lua"
   },
   "texstring" : {
    "begin" : "\u005C\u005C!!bs",
    "beginCaptures" : {
     "0" : {
-     "name" : "context.special.texstring.open.lua"
+     "name" : "punctuation.texstring.open.lua"
     }
    },
    "end" : "\u005C\u005C!!es",
    "endCaptures" : {
     "0" : {
-     "name" : "context.special.texstring.close.lua"
+     "name" : "punctuation.texstring.close.lua"
     }
    },
-   "name" : "context.string.texstring.text.lua"
+   "name" : "string.texstring.text.lua"
   }
  },
  "scopeName" : "source.context.cld",

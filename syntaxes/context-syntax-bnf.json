@@ -20,7 +20,7 @@
  "repository" : {
   "becomes" : {
    "match" : "::=",
-   "name" : "context.operator.symbol.becomes.bnf"
+   "name" : "keyword.operator.symbol.becomes.bnf"
   },
   "extra" : {
    "match" : "|",
@@ -29,13 +29,13 @@
   "term" : {
    "captures" : {
     "1" : {
-     "name" : "context.command.term.open.bnf"
+     "name" : "support.function.term.open.bnf"
     },
     "2" : {
      "name" : "context.text.term.text.bnf"
     },
     "3" : {
-     "name" : "context.command.term.close.bnf"
+     "name" : "support.function.term.close.bnf"
     }
    },
    "match" : "(<)(([a-zA-Z][a-zA-Z0-9\u005C-]*))(>)"
@@ -43,13 +43,13 @@
   "text_double" : {
    "captures" : {
     "1" : {
-     "name" : "context.special.doublequoted.open.bnf"
+     "name" : "punctuation.doublequoted.open.bnf"
     },
     "2" : {
      "name" : "context.text.doublequoted.text.bnf"
     },
     "3" : {
-     "name" : "context.special.doublequoted.close.bnf"
+     "name" : "punctuation.doublequoted.close.bnf"
     }
    },
    "match" : "(\u0022)([a-zA-Z0-9]|\u005C~|}|\u005C||{|`|_|\u005C^|\u005C]|\u005C\u005C|\u005C[|@|\u005C?|>|=|<|;|:|/|\u005C.|\u005C-|\u005C-|,|\u005C+|\u005C*|\u005C)|\u005C(|\u005C&|\u005C%|\u005C$|#|\u005C!| )(\u0022)"
@@ -57,13 +57,13 @@
   "text_single" : {
    "captures" : {
     "1" : {
-     "name" : "context.special.singlequoted.open.bnf"
+     "name" : "punctuation.singlequoted.open.bnf"
     },
     "2" : {
      "name" : "context.text.singlequoted.text.bnf"
     },
     "3" : {
-     "name" : "context.special.singlequoted.close.bnf"
+     "name" : "punctuation.singlequoted.close.bnf"
     }
    },
    "match" : "(')([a-zA-Z0-9]|\u005C~|}|\u005C||{|`|_|\u005C^|\u005C]|\u005C\u005C|\u005C[|@|\u005C?|>|=|<|;|:|/|\u005C.|\u005C-|\u005C-|,|\u005C+|\u005C*|\u005C)|\u005C(|\u005C&|\u005C%|\u005C$|#|\u005C!| )(')"

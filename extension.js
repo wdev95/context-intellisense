@@ -11,6 +11,14 @@ let cache = {
   parameterValueDefaults: new Map()
 };
 
+// Keep track of PDFs opened by this extension. This also covers a PDF editor
+// detached into another VS Code window, which is not visible in this window's
+// tab groups.
+const openedPdfPaths = new Set();
+const ACADEMIC_PDF_VIEWER_EXTENSION_ID = 'ovolab-veritas.academic-pdf-viewer';
+const ACADEMIC_PDF_VIEW_TYPE = 'academicPdfViewer.pdf';
+const ACADEMIC_PDF_RELOAD_COMMAND = 'academicPdfViewer.reload';
+
 function uniqueValues(values) {
   return Array.from(new Set(values.filter(Boolean)));
 }
@@ -1604,31 +1612,44 @@ function resolveMainFilePath(configuredMainFilePath, workspaceFolderPath = '') {
   return isExistingFile(resolved) ? resolved : '';
 }
 
-function hasPdfViewerExtensionInstalled() {
-  return vscode.extensions.all.some((extension) => {
-    const pkg = extension.packageJSON || {};
-    const contributes = pkg.contributes || {};
-    const languages = Array.isArray(contributes.languages) ? contributes.languages : [];
-    const customEditors = Array.isArray(contributes.customEditors) ? contributes.customEditors : [];
-
-    if ((pkg.name && String(pkg.name).toLowerCase().includes('pdf')) || (pkg.displayName && String(pkg.displayName).toLowerCase().includes('pdf'))) {
-      return true;
-    }
-
-    if (languages.some((language) => language && (language.id === 'pdf' || (Array.isArray(language.extensions) && language.extensions.includes('.pdf'))))) {
-      return true;
-    }
-
-    if (customEditors.some((editor) => editor && String(editor.viewType || '').toLowerCase().includes('pdf'))) {
-      return true;
-    }
-
-    return false;
-  });
+function getAcademicPdfViewerExtension() {
+  return vscode.extensions.getExtension(ACADEMIC_PDF_VIEWER_EXTENSION_ID);
 }
 
-async function openPdfFile(pdfPath) {
-  const pdfExtension = vscode.extensions.getExtension('tomoki1207.pdf');
+function findOpenPdfGroup(pdfPath) {
+  const normalizedPdfPath = path.normalize(pdfPath).toLowerCase();
+  for (const group of vscode.window.tabGroups.all) {
+    if (group.tabs.some((tab) => {
+      const uri = tab.input && tab.input.uri;
+      return uri && uri.scheme === 'file' && path.normalize(uri.fsPath).toLowerCase() === normalizedPdfPath;
+    })) {
+      return group;
+    }
+  }
+  return null;
+}
+
+async function openPdfFile(pdfPath, options = {}) {
+  const normalizedPdfPath = path.normalize(pdfPath).toLowerCase();
+  const existingGroup = findOpenPdfGroup(pdfPath);
+  const forceFocus = options.forceFocus === true;
+
+  // Reopening the custom editor recreates the PDF viewer and loses its
+  // split, detached-window, position, and size state.
+  if (openedPdfPaths.has(normalizedPdfPath) && !existingGroup) {
+    // The PDF may be in a detached VS Code window, which cannot be addressed
+    // through the tab API of the compiling window. Do not open a duplicate.
+    return true;
+  }
+
+  if (!forceFocus && existingGroup) {
+    // Remember a PDF found in this window as well, so detaching it afterwards
+    // does not make the next compile open a second editor.
+    openedPdfPaths.add(normalizedPdfPath);
+    return true;
+  }
+
+  const pdfExtension = getAcademicPdfViewerExtension();
   if (pdfExtension && !pdfExtension.isActive) {
     try {
       await pdfExtension.activate();
@@ -1647,9 +1668,15 @@ async function openPdfFile(pdfPath) {
   }
 
   const pdfUri = vscode.Uri.file(pdfPath);
-  if (hasPdfViewerExtensionInstalled()) {
+  if (pdfExtension) {
     try {
-      await vscode.commands.executeCommand('vscode.open', pdfUri, { viewColumn: vscode.ViewColumn.Beside, preview: false });
+      const viewColumn = existingGroup ? existingGroup.viewColumn : vscode.ViewColumn.Beside;
+      await vscode.commands.executeCommand('vscode.openWith', pdfUri, ACADEMIC_PDF_VIEW_TYPE, {
+        viewColumn,
+        preview: false,
+        preserveFocus: options.preserveFocus === true
+      });
+      openedPdfPaths.add(normalizedPdfPath);
       return true;
     } catch (error) {
       // Fall through to external application.
@@ -1657,7 +1684,19 @@ async function openPdfFile(pdfPath) {
   }
 
   await vscode.env.openExternal(pdfUri);
+  openedPdfPaths.add(normalizedPdfPath);
   return true;
+}
+
+async function reloadActiveAcademicPdf() {
+  try {
+    // Academic PDF Viewer exposes this command specifically to reload the
+    // active PDF.js document while retaining the webview and its view state.
+    await vscode.commands.executeCommand(ACADEMIC_PDF_RELOAD_COMMAND);
+    return true;
+  } catch (error) {
+    return false;
+  }
 }
 
 function isWindowsBatch(commandPath) {
@@ -1681,6 +1720,7 @@ function runProcessWithOutput(command, args, cwd, outputChannel) {
 
 function activate(context) {
   const suppressPromptKey = 'contextIntellisense.suppressXmlPathPrompt';
+  const academicPdfViewerPromptKey = 'contextIntellisense.academicPdfViewerPromptShown';
   const texRootStateKey = 'contextIntellisense.texRootPath';
   const mainFileStateKey = 'contextIntellisense.mainFilePath';
   const contextLanguageIds = [
@@ -1826,7 +1866,41 @@ function activate(context) {
     } else {
       vscode.window.showInformationMessage(`ConTeXt IntelliSense configured with TeX root: ${texRootPath}`);
     }
+    await maybeShowAcademicPdfViewerPrompt();
     return true;
+  }
+
+  async function maybeShowAcademicPdfViewerPrompt() {
+    if (context.globalState.get(academicPdfViewerPromptKey, false)) {
+      return;
+    }
+
+    // The prompt is only useful when the optional viewer is not installed.
+    if (getAcademicPdfViewerExtension()) {
+      await context.globalState.update(academicPdfViewerPromptKey, true);
+      return;
+    }
+
+    await context.globalState.update(academicPdfViewerPromptKey, true);
+    const openLabel = 'Open Academic PDF Viewer';
+    const selection = await vscode.window.showInformationMessage(
+      'For the best integrated PDF workflow, ConTeXt IntelliSense works optimally with the Academic PDF Viewer extension.',
+      openLabel,
+      'Not now'
+    );
+
+    if (selection !== openLabel) {
+      return;
+    }
+
+    const marketplaceSearch = '@id:ovolab-veritas.academic-pdf-viewer';
+    try {
+      await vscode.commands.executeCommand('workbench.extensions.search', marketplaceSearch);
+    } catch (error) {
+      await vscode.env.openExternal(vscode.Uri.parse(
+        'https://marketplace.visualstudio.com/items?itemName=ovolab-veritas.academic-pdf-viewer'
+      ));
+    }
   }
 
   async function configureMainFilePathWithPicker() {
@@ -1934,7 +2008,13 @@ function activate(context) {
 
       outputChannel.appendLine('Compilation completed successfully.');
       if (isExistingFile(pdfPath)) {
-        await openPdfFile(pdfPath);
+        await reloadActiveAcademicPdf();
+        const openPdfAfterCompile = vscode.workspace
+          .getConfiguration('contextIntellisense')
+          .get('openPdfAfterCompile', true);
+        if (openPdfAfterCompile) {
+          await openPdfFile(pdfPath);
+        }
       } else {
         vscode.window.showWarningMessage(`ConTeXt compilation succeeded, but no PDF was found at: ${pdfPath}`);
       }
@@ -2000,7 +2080,7 @@ function activate(context) {
       return false;
     }
 
-    await openPdfFile(pdfPath);
+    await openPdfFile(pdfPath, { forceFocus: true });
     return true;
   }
 

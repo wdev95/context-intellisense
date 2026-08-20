@@ -10,13 +10,13 @@
    "begin" : "\u005C[",
    "beginCaptures" : {
     "0" : {
-     "name" : "context.grouping.array.open.json"
+     "name" : "punctuation.definition.array.open.json"
     }
    },
    "end" : "\u005C]",
    "endCaptures" : {
     "0" : {
-     "name" : "context.grouping.array.close.json"
+     "name" : "punctuation.definition.array.close.json"
     }
    },
    "patterns" : [
@@ -52,19 +52,19 @@
   },
   "decnumber" : {
    "match" : "\u005Cs*([\u005C-]?[0-9]+(\u005C.[0-9]+)?([eEpP]\u005C-?[0-9]+)?)",
-   "name" : "context.number.dec.json"
+   "name" : "constant.numeric.dec.json"
   },
   "hash" : {
    "begin" : "\u005C{",
    "beginCaptures" : {
     "0" : {
-     "name" : "context.grouping.hash.open.json"
+     "name" : "punctuation.definition.hash.open.json"
     }
    },
    "end" : "\u005C}",
    "endCaptures" : {
     "0" : {
-     "name" : "context.grouping.hash.close.json"
+     "name" : "punctuation.definition.hash.close.json"
     }
    },
    "patterns" : [
@@ -75,7 +75,7 @@
   },
   "hexnumber" : {
    "match" : "\u005Cs*([\u005C-]?0[xX][A-Fa-f0-9]+(\u005C.[A-Fa-f0-9]+)?([eEpP]\u005C-?[A-Fa-f0-9]+)?)",
-   "name" : "context.number.hex.json"
+   "name" : "constant.numeric.hex.json"
   },
   "kv_array" : {
    "begin" : "(\u0022)((?:\u005C\u005C\u0022|[^\u0022])*)(\u0022)\u005Cs*(\u005C:)\u005Cs*(\u005C[)",
@@ -90,16 +90,16 @@
      "name" : "context.quote.array.key.close.json"
     },
     "4" : {
-     "name" : "context.operator.array.becomes.json"
+     "name" : "keyword.operator.array.becomes.json"
     },
     "5" : {
-     "name" : "context.grouping.array.value.open.json"
+     "name" : "punctuation.definition.array.value.open.json"
     }
    },
    "end" : "\u005C]",
    "endCaptures" : {
     "0" : {
-     "name" : "context.grouping.array.value.close.json"
+     "name" : "punctuation.definition.array.value.close.json"
     }
    },
    "patterns" : [
@@ -145,10 +145,10 @@
      "name" : "context.quote.dec.key.close.json"
     },
     "4" : {
-     "name" : "context.operator.dec.becomes.json"
+     "name" : "keyword.operator.dec.becomes.json"
     },
     "5" : {
-     "name" : "context.number.dec.value.json"
+     "name" : "constant.numeric.dec.value.json"
     }
    },
    "match" : "(\u0022)((?:\u005C\u005C\u0022|[^\u0022])*)(\u0022)\u005Cs*(\u005C:)\u005Cs*([\u005C-]?[0-9]+(\u005C.[0-9]+)?([eEpP]\u005C-?[0-9]+)?)"
@@ -166,16 +166,16 @@
      "name" : "context.quote.hash.key.close.json"
     },
     "4" : {
-     "name" : "context.operator.hash.becomes.json"
+     "name" : "keyword.operator.hash.becomes.json"
     },
     "5" : {
-     "name" : "context.grouping.hash.value.open.json"
+     "name" : "punctuation.definition.hash.value.open.json"
     }
    },
    "end" : "\u005C}",
    "endCaptures" : {
     "0" : {
-     "name" : "context.grouping.hash.value.close.json"
+     "name" : "punctuation.definition.hash.value.close.json"
     }
    },
    "patterns" : [
@@ -196,10 +196,10 @@
      "name" : "context.quote.hex.key.close.json"
     },
     "4" : {
-     "name" : "context.operator.hex.becomes.json"
+     "name" : "keyword.operator.hex.becomes.json"
     },
     "5" : {
-     "name" : "context.number.hex.value.json"
+     "name" : "constant.numeric.hex.value.json"
     }
    },
    "match" : "(\u0022)((?:\u005C\u005C\u0022|[^\u0022])*)(\u0022)\u005Cs*(\u005C:)\u005Cs*([\u005C-]?0[xX][A-Fa-f0-9]+(\u005C.[A-Fa-f0-9]+)?([eEpP]\u005C-?[A-Fa-f0-9]+)?)"
@@ -216,10 +216,10 @@
      "name" : "context.quote.reserved.key.close.json"
     },
     "4" : {
-     "name" : "context.operator.reserved.becomes.json"
+     "name" : "keyword.operator.reserved.becomes.json"
     },
     "5" : {
-     "name" : "context.primitive.reserved.value.json"
+     "name" : "keyword.reserved.value.json"
     }
    },
    "match" : "(\u0022)((?:\u005C\u005C\u0022|[^\u0022])*)(\u0022)\u005Cs*(\u005C:)\u005Cs*(true|null|false)"
@@ -236,13 +236,13 @@
      "name" : "context.quote.string.key.close.json"
     },
     "4" : {
-     "name" : "context.operator.string.becomes.json"
+     "name" : "keyword.operator.string.becomes.json"
     },
     "5" : {
      "name" : "context.quote.string.value.open.json"
     },
     "6" : {
-     "name" : "context.string.string.value.text.json"
+     "name" : "string.string.value.text.json"
     },
     "7" : {
      "name" : "context.quote.string.value.close.json"
@@ -252,11 +252,11 @@
   },
   "reserved" : {
    "match" : "\u005Cs*(true|null|false)",
-   "name" : "context.primitive.reserved.json"
+   "name" : "keyword.reserved.json"
   },
   "separator" : {
    "match" : "\u005Cs*(\u005C,)",
-   "name" : "context.operator.separator.json"
+   "name" : "keyword.operator.separator.json"
   },
   "string" : {
    "captures" : {
@@ -264,7 +264,7 @@
      "name" : "context.quote.string.open.json"
     },
     "2" : {
-     "name" : "context.string.string.text.json"
+     "name" : "string.string.text.json"
     },
     "3" : {
      "name" : "context.quote.string.close.json"

@@ -3,7 +3,7 @@
   "displayName": "ConTeXt IntelliSense",
   "description": "ConTeXt syntax highlighting plus context-aware completions with command signatures and key-value hints.",
   "icon": "icon.png",
-  "version": "1.0.33",
+  "version": "1.0.50",
   "publisher": "wdev",
   "repository": {
     "type": "git",
@@ -342,47 +342,6 @@
         "editor.inlineSuggest.enabled": false,
         "editor.tabCompletion": "on",
         "editor.suggest.snippetsPreventQuickSuggestions": false
-      },
-      "editor.tokenColorCustomizations": {
-        "textMateRules": [
-          {
-            "scope": [
-              "context.comment"
-            ],
-            "settings": {
-              "foreground": "#8A8A00"
-            }
-          },
-          {
-            "scope": [
-              "context.command",
-              "context.primitive",
-              "context.helper"
-            ],
-            "settings": {
-              "foreground": "#008000",
-              "fontStyle": "bold"
-            }
-          },
-          {
-            "scope": [
-              "context.constant",
-              "context.reserved"
-            ],
-            "settings": {
-              "foreground": "#007A7A"
-            }
-          },
-          {
-            "scope": [
-              "context.grouping",
-              "context.special"
-            ],
-            "settings": {
-              "foreground": "#005A9C"
-            }
-          }
-        ]
       }
     },
     "configuration": {
@@ -397,6 +356,11 @@
           "type": "string",
           "default": "",
           "description": "Absolute path to the project main .tex file that should be compiled from the main-file command."
+        },
+        "contextIntellisense.openPdfAfterCompile": {
+          "type": "boolean",
+          "default": true,
+          "description": "Open the generated PDF automatically after a successful compile. Uses Academic PDF Viewer (ovolab-veritas.academic-pdf-viewer) when installed."
         },
         "contextIntellisense.copilotDisableMode": {
           "type": "string",

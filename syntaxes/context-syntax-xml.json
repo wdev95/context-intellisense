@@ -33,19 +33,19 @@
   "attribute_double" : {
    "captures" : {
     "1" : {
-     "name" : "context.plain.attribute.double.namespace.xml"
+     "name" : "variable.attribute.double.namespace.xml"
     },
     "2" : {
-     "name" : "context.constant.attribute.double.name.xml"
+     "name" : "constant.attribute.double.name.xml"
     },
     "3" : {
-     "name" : "context.special.attribute.double.open.xml"
+     "name" : "punctuation.attribute.double.open.xml"
     },
     "4" : {
-     "name" : "context.string.attribute.double.text.xml"
+     "name" : "string.attribute.double.text.xml"
     },
     "5" : {
-     "name" : "context.special.attribute.double.close.xml"
+     "name" : "punctuation.attribute.double.close.xml"
     }
    },
    "match" : "((?:[-\u005Cw.]+:)?)([-\u005Cw.:]+)\u005Cs*=\u005Cs*(\u0022)((?:\u005C\u005C\u0022|[^\u0022])*)(\u0022)"
@@ -53,19 +53,19 @@
   "attribute_single" : {
    "captures" : {
     "1" : {
-     "name" : "context.plain.attribute.single.namespace.xml"
+     "name" : "variable.attribute.single.namespace.xml"
     },
     "2" : {
-     "name" : "context.constant.attribute.single.name.xml"
+     "name" : "constant.attribute.single.name.xml"
     },
     "3" : {
-     "name" : "context.special.attribute.single.open.xml"
+     "name" : "punctuation.attribute.single.open.xml"
     },
     "4" : {
-     "name" : "context.string.attribute.single.text.xml"
+     "name" : "string.attribute.single.text.xml"
     },
     "5" : {
-     "name" : "context.special.attribute.single.close.xml"
+     "name" : "punctuation.attribute.single.close.xml"
     }
    },
    "match" : "((?:[-\u005Cw.]+:)?)([-\u005Cw.:]+)\u005Cs*=\u005Cs*(')((?:\u005C\u005C'|[^'])*)(')"
@@ -84,30 +84,30 @@
    "begin" : "<!\u005C[CDATA\u005C[",
    "beginCaptures" : {
     "0" : {
-     "name" : "context.command.cdata.open.xml"
+     "name" : "support.function.cdata.open.xml"
     }
    },
    "end" : "]]>",
    "endCaptures" : {
     "0" : {
-     "name" : "context.command.cdata.close.xml"
+     "name" : "support.function.cdata.close.xml"
     }
    },
-   "name" : "context.default.cdata.text.xml"
+   "name" : "variable.cdata.text.xml"
   },
   "close" : {
    "captures" : {
     "1" : {
-     "name" : "context.keyword.close.open.xml"
+     "name" : "keyword.close.open.xml"
     },
     "2" : {
-     "name" : "context.plain.close.namespace.xml"
+     "name" : "variable.close.namespace.xml"
     },
     "3" : {
-     "name" : "context.keyword.close.name.xml"
+     "name" : "keyword.close.name.xml"
     },
     "4" : {
-     "name" : "context.keyword.close.close.xml"
+     "name" : "keyword.close.close.xml"
     }
    },
    "match" : "(</)((?:[-\u005Cw.]+:)?)([-\u005Cw.:]+)\u005Cs*(>)"
@@ -116,16 +116,16 @@
    "begin" : "<!--",
    "beginCaptures" : {
     "0" : {
-     "name" : "context.command.comment.open.xml"
+     "name" : "support.function.comment.open.xml"
     }
    },
    "end" : "-->",
    "endCaptures" : {
     "0" : {
-     "name" : "context.command.comment.close.xml"
+     "name" : "support.function.comment.close.xml"
     }
    },
-   "name" : "context.comment.comment.text.xml"
+   "name" : "comment.comment.text.xml"
   },
   "element_error" : {
    "match" : "<?:([^>]*)>",
@@ -133,34 +133,34 @@
   },
   "entity" : {
    "match" : "&.*?;",
-   "name" : "context.constant.entity.xml"
+   "name" : "constant.entity.xml"
   },
   "instruction" : {
    "begin" : "<\u005C?[-\u005Cw.:]+",
    "beginCaptures" : {
     "0" : {
-     "name" : "context.command.instruction.open.xml"
+     "name" : "support.function.instruction.open.xml"
     }
    },
    "end" : "\u005C?>",
    "endCaptures" : {
     "0" : {
-     "name" : "context.command.instruction.close.xml"
+     "name" : "support.function.instruction.close.xml"
     }
    },
-   "name" : "context.default.instruction.text.xml"
+   "name" : "variable.instruction.text.xml"
   },
   "instruction_lua" : {
    "begin" : "<\u005C?lua",
    "beginCaptures" : {
     "0" : {
-     "name" : "context.command.instruction.lua.open.xml"
+     "name" : "support.function.instruction.lua.open.xml"
     }
    },
    "end" : "\u005C?>",
    "endCaptures" : {
     "0" : {
-     "name" : "context.command.instruction.lua.close.xml"
+     "name" : "support.function.instruction.lua.close.xml"
     }
    },
    "patterns" : [
@@ -173,13 +173,13 @@
    "begin" : "<\u005C?xml",
    "beginCaptures" : {
     "0" : {
-     "name" : "context.command.instruction.xml.open.xml"
+     "name" : "support.function.instruction.xml.open.xml"
     }
    },
    "end" : "\u005C?>",
    "endCaptures" : {
     "0" : {
-     "name" : "context.command.instruction.xml.close.xml"
+     "name" : "support.function.instruction.xml.close.xml"
     }
    },
    "patterns" : [
@@ -192,22 +192,22 @@
    "begin" : "(<)((?:[-\u005Cw.]+:)?)([-\u005Cw.:]+)",
    "beginCaptures" : {
     "1" : {
-     "name" : "context.keyword.open.open.xml"
+     "name" : "keyword.open.open.xml"
     },
     "2" : {
-     "name" : "context.plain.open.namespace.xml"
+     "name" : "variable.open.namespace.xml"
     },
     "3" : {
-     "name" : "context.keyword.open.name.xml"
+     "name" : "keyword.open.name.xml"
     }
    },
    "end" : "(/?)(>)",
    "endCaptures" : {
     "1" : {
-     "name" : "context.keyword.open.empty.xml"
+     "name" : "keyword.open.empty.xml"
     },
     "2" : {
-     "name" : "context.keyword.open.close.xml"
+     "name" : "keyword.open.close.xml"
     }
    },
    "patterns" : [

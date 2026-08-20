@@ -25,13 +25,13 @@
    "begin" : "(\u005C[)",
    "beginCaptures" : {
     "1" : {
-     "name" : "context.grouping.array.open.pdf"
+     "name" : "punctuation.definition.array.open.pdf"
     }
    },
    "end" : "(\u005C])",
    "endCaptures" : {
     "1" : {
-     "name" : "context.grouping.array.close.pdf"
+     "name" : "punctuation.definition.array.close.pdf"
     }
    },
    "patterns" : [
@@ -42,7 +42,7 @@
   },
   "comment" : {
    "match" : "%.*$\u005Cn?",
-   "name" : "context.comment.comment.pdf"
+   "name" : "comment.comment.pdf"
   },
   "content" : {
    "patterns" : [
@@ -57,29 +57,29 @@
     },
     {
      "match" : "(/[^\u005Cs<>/\u005C[\u005C]\u005C(\u005C)]+)",
-     "name" : "context.constant.object.content.name.pdf"
+     "name" : "constant.object.content.name.pdf"
     },
     {
      "captures" : {
       "1" : {
-       "name" : "context.warning.content.reference.1.pdf"
+       "name" : "invalid.content.reference.1.pdf"
       },
       "2" : {
-       "name" : "context.warning.content.reference.2.pdf"
+       "name" : "invalid.content.reference.2.pdf"
       },
       "3" : {
-       "name" : "context.command.content.reference.3.pdf"
+       "name" : "support.function.content.reference.3.pdf"
       }
      },
      "match" : "([0-9]+)\u005Cs*([0-9]+)\u005Cs*(R)"
     },
     {
      "match" : "([\u005C-]?[0-9]*[\u005C.]?[0-9]+)",
-     "name" : "context.number.content.real.pdf"
+     "name" : "constant.numeric.content.real.pdf"
     },
     {
      "match" : "([\u005C-]?[0-9]+)",
-     "name" : "context.number.content.integer.pdf"
+     "name" : "constant.numeric.content.integer.pdf"
     },
     {
      "captures" : {
@@ -87,7 +87,7 @@
        "name" : "context.quote.content.string.open.pdf"
       },
       "2" : {
-       "name" : "context.string.content.string.text.pdf"
+       "name" : "string.content.string.text.pdf"
       },
       "3" : {
        "name" : "context.quote.content.string.close.pdf"
@@ -97,7 +97,7 @@
     },
     {
      "match" : "(true|null|false)",
-     "name" : "context.number.content.reserved.pdf"
+     "name" : "constant.numeric.content.reserved.pdf"
     },
     {
      "captures" : {
@@ -105,10 +105,10 @@
        "name" : "context.quote.content.unicode.open.pdf"
       },
       "2" : {
-       "name" : "context.plain.content.unicode.bomb.pdf"
+       "name" : "variable.content.unicode.bomb.pdf"
       },
       "3" : {
-       "name" : "context.string.content.unicode.text.pdf"
+       "name" : "string.content.unicode.text.pdf"
       },
       "4" : {
        "name" : "context.quote.content.unicode.close.pdf"
@@ -122,7 +122,7 @@
        "name" : "context.quote.content.whatsit.open.pdf"
       },
       "2" : {
-       "name" : "context.string.content.whatsit.text.pdf"
+       "name" : "string.content.whatsit.text.pdf"
       },
       "3" : {
        "name" : "context.quote.content.whatsit.close.pdf"
@@ -136,13 +136,13 @@
    "begin" : "(<<)",
    "beginCaptures" : {
     "1" : {
-     "name" : "context.grouping.dictionary.open.pdf"
+     "name" : "punctuation.definition.dictionary.open.pdf"
     }
    },
    "end" : "(>>)",
    "endCaptures" : {
     "1" : {
-     "name" : "context.grouping.dictionary.close.pdf"
+     "name" : "punctuation.definition.dictionary.close.pdf"
     }
    },
    "patterns" : [
@@ -150,7 +150,7 @@
      "begin" : "(/[^\u005Cs<>/\u005C[\u005C]\u005C(\u005C)]+)\u005Cs*",
      "beginCaptures" : {
       "1" : {
-       "name" : "context.command.dictionary.name.pdf"
+       "name" : "support.function.dictionary.name.pdf"
       }
      },
      "end" : "(?=[>])",
@@ -166,19 +166,19 @@
    "begin" : "([0-9]+)\u005Cs*([0-9]+)\u005Cs*(obj)",
    "beginCaptures" : {
     "1" : {
-     "name" : "context.warning.object.1.pdf"
+     "name" : "invalid.object.1.pdf"
     },
     "2" : {
-     "name" : "context.warning.object.2.pdf"
+     "name" : "invalid.object.2.pdf"
     },
     "3" : {
-     "name" : "context.keyword.object.open.pdf"
+     "name" : "keyword.object.open.pdf"
     }
    },
    "end" : "(endobj)",
    "endCaptures" : {
     "1" : {
-     "name" : "context.keyword.object.close.pdf"
+     "name" : "keyword.object.close.pdf"
     }
    },
    "patterns" : [
@@ -191,7 +191,7 @@
    "begin" : "startxref\u005Cs*",
    "captures" : {
     "0" : {
-     "name" : "context.keyword.startxref.1.pdf"
+     "name" : "keyword.startxref.1.pdf"
     }
    },
    "end" : "(?=[^0-9])",
@@ -200,7 +200,7 @@
      "begin" : "([0-9]+)\u005Cs*",
      "captures" : {
       "1" : {
-       "name" : "context.number.startxref.2.pdf"
+       "name" : "constant.numeric.startxref.2.pdf"
       }
      },
      "end" : "(?=.)"
@@ -211,25 +211,25 @@
    "begin" : "^stream$",
    "beginCaptures" : {
     "0" : {
-     "name" : "context.keyword.stream.open.pdf"
+     "name" : "keyword.stream.open.pdf"
     }
    },
    "end" : "^endstream$",
    "endCaptures" : {
     "0" : {
-     "name" : "context.keyword.stream.close.pdf"
+     "name" : "keyword.stream.close.pdf"
     }
    }
   },
   "trailer" : {
    "match" : "trailer",
-   "name" : "context.keyword.trailer.pdf"
+   "name" : "keyword.trailer.pdf"
   },
   "xref" : {
    "begin" : "xref\u005Cs*",
    "captures" : {
     "0" : {
-     "name" : "context.keyword.xref.1.pdf"
+     "name" : "keyword.xref.1.pdf"
     }
    },
    "end" : "(?=[^0-9])",
@@ -238,10 +238,10 @@
      "begin" : "([0-9]+)\u005Cs*([0-9]+)\u005Cs*",
      "captures" : {
       "1" : {
-       "name" : "context.number.xref.2.pdf"
+       "name" : "constant.numeric.xref.2.pdf"
       },
       "2" : {
-       "name" : "context.number.xref.3.pdf"
+       "name" : "constant.numeric.xref.3.pdf"
       }
      },
      "end" : "(?=[^0-9])",
@@ -250,13 +250,13 @@
        "begin" : "([0-9]+)\u005Cs*([0-9]+)\u005Cs*([fn])\u005Cs*",
        "captures" : {
         "1" : {
-         "name" : "context.number.xref.4.pdf"
+         "name" : "constant.numeric.xref.4.pdf"
         },
         "2" : {
-         "name" : "context.number.xref.5.pdf"
+         "name" : "constant.numeric.xref.5.pdf"
         },
         "3" : {
-         "name" : "context.keyword.xref.6.pdf"
+         "name" : "keyword.xref.6.pdf"
         }
        },
        "end" : "(?=.)"
