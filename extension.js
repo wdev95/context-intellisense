@@ -1903,8 +1903,8 @@ async function getAcademicPdfViewerApi() {
   }
   try {
     const api = extension.isActive ? extension.exports : await extension.activate();
-    return api && typeof api.forwardSyncTex === 'function'
-      && api.onDidRequestInverseSyncTex
+    return api && api.tex && typeof api.tex.synctexForward === 'function'
+      && api.tex.onDidRequestInverseSyncTex
       ? api
       : null;
   } catch (error) {
@@ -1972,6 +1972,17 @@ function activate(context) {
   function getConfiguredMainFilePath() {
     const config = vscode.workspace.getConfiguration('contextIntellisense');
     return String(config.get('mainFilePath', '') || '').trim();
+  }
+
+  /** Resolves a workspace-relative path received from the PDF viewer. */
+  function resolveWorkspaceRelativePath(relativePath) {
+    const workspaceRoot = getWorkspaceRootPath();
+    const value = String(relativePath || '').trim();
+    if (!workspaceRoot || !value || path.isAbsolute(value)) {
+      return '';
+    }
+    const resolved = path.resolve(workspaceRoot, value);
+    return toWorkspaceRelativePath(resolved, workspaceRoot) ? resolved : '';
   }
 
   function hasUsableTexRoot(configuredTexRootPath) {
@@ -2241,12 +2252,12 @@ function activate(context) {
 
     const message = {
       type: 'synctex.forward',
-      pdfUri: vscode.Uri.file(pdfPath).toString(),
+      pdfUri: toWorkspaceRelativePath(pdfPath, getWorkspaceRootPath()),
       pageNumber: location.pageNumber,
       x: location.x,
       y: location.y
     };
-    const accepted = viewer.forwardSyncTex(message);
+    const accepted = viewer.tex.synctexForward(message);
     writeSyncTexTrace('forward', {
       ...trace,
       parsedLocation: location,
@@ -2322,8 +2333,7 @@ function activate(context) {
       });
       return;
     }
-    const pdfUri = vscode.Uri.parse(event.pdfUri);
-    const pdfPath = pdfUri.fsPath;
+    const pdfPath = resolveWorkspaceRelativePath(event.pdfUri);
     const sidecarPath = findSyncTexSidecar(pdfPath);
     const requestDetails = {
       viewerEvent: { ...event, pdfUri: formatSyncTexTraceUri(event.pdfUri) },
@@ -2396,8 +2406,7 @@ function activate(context) {
       status: 'completed',
       parsedLocation: { ...location, filePath: formatSyncTexTracePath(location.filePath) },
       resolvedSourcePath: formatSyncTexTracePath(sourcePath),
-      resolvedSourcePath: sourcePath,
-      editorUri: document.uri.toString(),
+      editorUri: formatSyncTexTraceUri(toWorkspaceRelativePath(sourcePath, getWorkspaceRootPath())),
       editorPosition: { line: line + 1, character }
     });
   }
@@ -2408,11 +2417,11 @@ function activate(context) {
     if (!viewer) {
       return;
     }
-    context.subscriptions.push(viewer.onDidRequestInverseSyncTex((event) => {
+    context.subscriptions.push(viewer.tex.onDidRequestInverseSyncTex((event) => {
       void handleInverseSyncTex(event).catch((error) => {
         writeSyncTexTrace('inverse', {
           status: 'exception',
-          viewerEvent: event,
+          viewerEvent: { ...event, pdfUri: formatSyncTexTraceUri(event.pdfUri) },
           error: String(error && error.stack ? error.stack : error)
         });
       });
@@ -2630,6 +2639,13 @@ function activate(context) {
 
       vscode.window.showErrorMessage('ConTeXt IntelliSense: no main file configured. Use "Set as Main File" in Explorer or "Configure Main File" in the command palette.');
       return false;
+    }
+
+    for (const document of vscode.workspace.textDocuments) {
+      if (document.languageId === 'context.tex' && document.isDirty && !await document.save()) {
+        vscode.window.showErrorMessage(`ConTeXt IntelliSense: could not save ${document.fileName}.`);
+        return false;
+      }
     }
 
     return compileTargetFile(mainFilePath, 'Compile main ConTeXt file');
