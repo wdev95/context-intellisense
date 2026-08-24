@@ -1586,6 +1586,31 @@ function toWorkspaceRelativePath(filePath, workspaceFolderPath) {
   return relativePath.split(path.sep).join('/');
 }
 
+/** Formats a filesystem path without exposing absolute workspace or external paths in traces. */
+function formatSyncTexTracePath(filePath) {
+  const value = String(filePath || '');
+  if (!value) {
+    return value;
+  }
+  const workspaceRoot = vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0
+    ? vscode.workspace.workspaceFolders[0].uri.fsPath
+    : '';
+  const relativePath = workspaceRoot ? toWorkspaceRelativePath(value, workspaceRoot) : '';
+  return relativePath || '<external>';
+}
+
+/** Formats a file URI as a workspace-relative trace value. */
+function formatSyncTexTraceUri(uriValue) {
+  try {
+    const uri = vscode.Uri.parse(String(uriValue || ''));
+    return uri.scheme === 'file'
+      ? `workspace:${formatSyncTexTracePath(uri.fsPath)}`
+      : uri.toString();
+  } catch {
+    return '<invalid-uri>';
+  }
+}
+
 function findOpenPdfGroup(pdfPath) {
   const normalizedPdfPath = path.normalize(pdfPath).toLowerCase();
   for (const group of vscode.window.tabGroups.all) {
@@ -1929,7 +1954,7 @@ function activate(context) {
     const configured = String(vscode.workspace
       .getConfiguration('contextIntellisense')
       .get('synctex', 'doubleclick') || '').toLowerCase();
-    return ['off', 'doubleclick', 'ctrl+click', 'rightclick'].includes(configured)
+    return ['off', 'doubleclick', 'rightclick'].includes(configured)
       ? configured
       : 'doubleclick';
   }
@@ -2016,6 +2041,27 @@ function activate(context) {
     return sourcePath;
   }
 
+  /** Returns the workspace root when the PDF belongs to the active workspace. */
+  function getSyncTexWorkingDirectory(pdfPath) {
+    const workspaceRoot = getWorkspaceRootPath();
+    if (workspaceRoot) {
+      const relativePath = path.relative(workspaceRoot, pdfPath);
+      if (relativePath && !relativePath.startsWith(`..${path.sep}`) && !path.isAbsolute(relativePath)) {
+        return workspaceRoot;
+      }
+    }
+    return path.dirname(pdfPath);
+  }
+
+  /** Converts a file path to a normalized path relative to the SyncTeX working directory. */
+  function toSyncTexRelativePath(filePath, workingDirectory, relativeBase = workingDirectory) {
+    const absolutePath = path.isAbsolute(filePath)
+      ? filePath
+      : path.resolve(relativeBase, filePath);
+    const relativePath = path.relative(workingDirectory, absolutePath);
+    return (relativePath || path.basename(absolutePath)).split(path.sep).join('/');
+  }
+
   /** Resolves a SyncTeX source path relative to the generated PDF. */
   function resolveSyncTexSourcePath(sourcePath, pdfPath) {
     const value = String(sourcePath || '').trim();
@@ -2043,12 +2089,12 @@ function activate(context) {
 
   /** Builds the preferred ConTeXt SyncTeX command and its arguments. */
   function buildSyncTexCommand(direction, sourcePath, pdfPath, sidecarPath, selection, event) {
-    const cwd = path.dirname(pdfPath);
+    const cwd = getSyncTexWorkingDirectory(pdfPath);
     const mtxrun = resolveMtxRunExecutable(getResolvedTexRootPath());
     if (mtxrun) {
-      const sidecarName = path.relative(cwd, sidecarPath).replace(/\\/g, '/');
+      const sidecarName = toSyncTexRelativePath(sidecarPath, cwd);
       if (direction === 'forward') {
-        const sourceName = path.relative(cwd, sourcePath).replace(/\\/g, '/');
+        const sourceName = toSyncTexRelativePath(sourcePath, cwd);
         return {
           executable: mtxrun,
           args: [
@@ -2057,7 +2103,8 @@ function activate(context) {
             `--line=${selection.active.line + 1}`,
             sidecarName
           ],
-          backend: 'mtxrun'
+          backend: 'mtxrun',
+          cwd
         };
       }
       return {
@@ -2070,31 +2117,36 @@ function activate(context) {
           '--console',
           sidecarName
         ],
-        backend: 'mtxrun'
+        backend: 'mtxrun',
+        cwd
       };
     }
 
     if (direction === 'forward') {
-      const inputName = resolveSyncTexInputName(sourcePath, sidecarPath, pdfPath);
+      const recordedInputName = resolveSyncTexInputName(sourcePath, sidecarPath, pdfPath);
+      const inputName = toSyncTexRelativePath(recordedInputName, cwd, path.dirname(pdfPath));
+      const relativePdfPath = toSyncTexRelativePath(pdfPath, cwd);
       return {
         executable: resolveSyncTexExecutable(getResolvedTexRootPath()),
         args: [
           'view',
           '-i', `${selection.active.line + 1}:${selection.active.character}:${inputName}`,
-          '-o', pdfPath,
-          '-d', path.dirname(sidecarPath)
+          '-o', relativePdfPath,
+          '-d', toSyncTexRelativePath(path.dirname(sidecarPath), cwd)
         ],
-        backend: 'synctex'
+        backend: 'synctex',
+        cwd
       };
     }
     return {
       executable: resolveSyncTexExecutable(getResolvedTexRootPath()),
       args: [
         'edit',
-        '-o', `${event.pageNumber}:${event.x}:${event.y}:${pdfPath}`,
-        '-d', path.dirname(sidecarPath)
+        '-o', `${event.pageNumber}:${event.x}:${event.y}:${toSyncTexRelativePath(pdfPath, cwd)}`,
+        '-d', toSyncTexRelativePath(path.dirname(sidecarPath), cwd)
       ],
-      backend: 'synctex'
+      backend: 'synctex',
+      cwd
     };
   }
 
@@ -2107,8 +2159,8 @@ function activate(context) {
 
     const selection = editor.selection;
     const requestDetails = {
-      editorUri: document.uri.toString(),
-      documentPath: document.uri.fsPath,
+      editorUri: formatSyncTexTraceUri(document.uri.toString()),
+      documentPath: formatSyncTexTracePath(document.uri.fsPath),
       languageId: document.languageId,
       selection: selection ? {
         isEmpty: selection.isEmpty,
@@ -2136,8 +2188,8 @@ function activate(context) {
         ...requestDetails,
         status: 'ignored',
         reason: 'No main PDF or SyncTeX sidecar found.',
-        configuredMainFile: getConfiguredMainFilePath(),
-        resolvedMainFile: getResolvedMainFilePath()
+        configuredMainFile: formatSyncTexTracePath(getConfiguredMainFilePath()),
+        resolvedMainFile: formatSyncTexTracePath(getResolvedMainFilePath())
       });
       return;
     }
@@ -2148,18 +2200,18 @@ function activate(context) {
     const result = await runProcessCapture(
       executable,
       args,
-      path.dirname(pdfPath)
+      command.cwd
     );
     const trace = {
       ...requestDetails,
       status: result.code === 0 ? 'completed' : 'failed',
-      executable,
+      executable: formatSyncTexTracePath(executable),
       args,
-      cwd: path.dirname(pdfPath),
-      configuredTexRoot: getConfiguredTexRootPath(),
-      resolvedTexRoot: getResolvedTexRootPath(),
-      pdfPath,
-      sidecarPath,
+      cwd: formatSyncTexTracePath(command.cwd),
+      configuredTexRoot: formatSyncTexTracePath(getConfiguredTexRootPath()),
+      resolvedTexRoot: formatSyncTexTracePath(getResolvedTexRootPath()),
+      pdfPath: formatSyncTexTracePath(pdfPath),
+      sidecarPath: formatSyncTexTracePath(sidecarPath),
       backend: command.backend,
       exitCode: result.code,
       stdout: result.stdout,
@@ -2195,7 +2247,12 @@ function activate(context) {
       y: location.y
     };
     const accepted = viewer.forwardSyncTex(message);
-    writeSyncTexTrace('forward', { ...trace, parsedLocation: location, viewerMessage: message, viewerAccepted: accepted });
+    writeSyncTexTrace('forward', {
+      ...trace,
+      parsedLocation: location,
+      viewerMessage: { ...message, pdfUri: formatSyncTexTraceUri(message.pdfUri) },
+      viewerAccepted: accepted
+    });
   }
 
   /** Finds a visible text editor for a normalized source path. */
@@ -2261,7 +2318,7 @@ function activate(context) {
       writeSyncTexTrace('inverse', {
         status: 'ignored',
         reason: 'SyncTeX is disabled by contextIntellisense.synctex.',
-        viewerEvent: event
+        viewerEvent: { ...event, pdfUri: formatSyncTexTraceUri(event.pdfUri) }
       });
       return;
     }
@@ -2269,11 +2326,11 @@ function activate(context) {
     const pdfPath = pdfUri.fsPath;
     const sidecarPath = findSyncTexSidecar(pdfPath);
     const requestDetails = {
-      viewerEvent: event,
-      pdfUri: event.pdfUri,
-      pdfPath,
+      viewerEvent: { ...event, pdfUri: formatSyncTexTraceUri(event.pdfUri) },
+      pdfUri: formatSyncTexTraceUri(event.pdfUri),
+      pdfPath: formatSyncTexTracePath(pdfPath),
       pdfExists: isExistingFile(pdfPath),
-      sidecarPath,
+      sidecarPath: formatSyncTexTracePath(sidecarPath),
       sidecarExists: !!sidecarPath
     };
     if (!isExistingFile(pdfPath) || !sidecarPath) {
@@ -2286,15 +2343,15 @@ function activate(context) {
     const result = await runProcessCapture(
       executable,
       args,
-      path.dirname(pdfPath)
+      command.cwd
     );
     const trace = {
       ...requestDetails,
-      executable,
+      executable: formatSyncTexTracePath(executable),
       args,
-      cwd: path.dirname(pdfPath),
-      configuredTexRoot: getConfiguredTexRootPath(),
-      resolvedTexRoot: getResolvedTexRootPath(),
+      cwd: formatSyncTexTracePath(command.cwd),
+      configuredTexRoot: formatSyncTexTracePath(getConfiguredTexRootPath()),
+      resolvedTexRoot: formatSyncTexTracePath(getResolvedTexRootPath()),
       backend: command.backend,
       exitCode: result.code,
       stdout: result.stdout,
@@ -2317,7 +2374,12 @@ function activate(context) {
 
     const sourcePath = resolveSyncTexSourcePath(location.filePath, pdfPath);
     if (!isExistingFile(sourcePath)) {
-      writeSyncTexTrace('inverse', { ...trace, status: 'source-not-found', parsedLocation: location, resolvedSourcePath: sourcePath });
+      writeSyncTexTrace('inverse', {
+        ...trace,
+        status: 'source-not-found',
+        parsedLocation: { ...location, filePath: formatSyncTexTracePath(location.filePath) },
+        resolvedSourcePath: formatSyncTexTracePath(sourcePath)
+      });
       outputChannel.appendLine(`SyncTeX source file not found: ${location.filePath}`);
       return;
     }
@@ -2332,7 +2394,8 @@ function activate(context) {
     writeSyncTexTrace('inverse', {
       ...trace,
       status: 'completed',
-      parsedLocation: location,
+      parsedLocation: { ...location, filePath: formatSyncTexTracePath(location.filePath) },
+      resolvedSourcePath: formatSyncTexTracePath(sourcePath),
       resolvedSourcePath: sourcePath,
       editorUri: document.uri.toString(),
       editorPosition: { line: line + 1, character }
@@ -2703,7 +2766,7 @@ function activate(context) {
 
   const synctexForwardCommand = vscode.commands.registerCommand('contextIntellisense.synctexForward', async () => {
     const mode = getSyncTexMode();
-    if (mode !== 'ctrl+click' && mode !== 'rightclick') {
+    if (mode !== 'rightclick') {
       return;
     }
     await forwardSyncTex(vscode.window.activeTextEditor, {
@@ -2714,10 +2777,15 @@ function activate(context) {
   context.subscriptions.push(synctexForwardCommand);
 
   context.subscriptions.push(vscode.window.onDidChangeTextEditorSelection((event) => {
-    if (getSyncTexMode() !== 'doubleclick'
-      || event.kind !== vscode.TextEditorSelectionChangeKind.Mouse) {
+    if (event.kind !== vscode.TextEditorSelectionChangeKind.Mouse) {
       return;
     }
+
+    const mode = getSyncTexMode();
+    if (mode !== 'doubleclick') {
+      return;
+    }
+
     void forwardSyncTex(event.textEditor, {
       trigger: 'doubleclick'
     }).catch((error) => {

@@ -3,7 +3,7 @@
   "displayName": "ConTeXt IntelliSense",
   "description": "ConTeXt syntax highlighting plus context-aware completions with command signatures and key-value hints.",
   "icon": "icon.png",
-  "version": "1.1.2",
+  "version": "1.1.7",
   "publisher": "wdev",
   "repository": {
     "type": "git",
@@ -62,13 +62,6 @@
         "command": "contextIntellisense.clearWorkspace",
         "title": "Clear Workspace",
         "icon": "$(trash)"
-      }
-    ],
-    "keybindings": [
-      {
-        "command": "contextIntellisense.synctexForward",
-        "key": "ctrl+click",
-        "when": "editorTextFocus && resourceLangId == context.tex && config.contextIntellisense.synctex == ctrl+click"
       }
     ],
     "menus": {
@@ -343,13 +336,11 @@
           "enum": [
             "off",
             "doubleclick",
-            "ctrl+click",
             "rightclick"
           ],
           "enumDescriptions": [
             "Disable both forward and inverse SyncTeX.",
             "Run forward SyncTeX after a double-click selection.",
-            "Run forward SyncTeX with Ctrl+Click.",
             "Run forward SyncTeX from the editor context menu."
           ],
           "default": "doubleclick",
