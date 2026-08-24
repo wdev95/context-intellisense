@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const cp = require('child_process');
+const zlib = require('zlib');
 const vscode = require('vscode');
 
 let cache = {
@@ -1035,49 +1036,7 @@ function getCommandEntry(commandName) {
 
 function resolveXmlPath(configuredXmlPath) {
   const configured = String(configuredXmlPath || '').trim();
-  if (configured && fs.existsSync(configured)) {
-    return configured;
-  }
-
-  const candidates = [];
-  const localAppData = process.env.LOCALAPPDATA || '';
-  const userProfile = process.env.USERPROFILE || '';
-
-  if (localAppData) {
-    candidates.push(path.join(localAppData, 'Packages', '7614MasterDevelopment.ConTeXtIDE_6y3v46cbhs1ne', 'LocalState', 'tex', 'texmf-context', 'tex', 'context', 'interface', 'mkiv', 'context-en.xml'));
-  }
-
-  const packageRoots = [
-    localAppData ? path.join(localAppData, 'Packages') : '',
-    userProfile ? path.join(userProfile, 'AppData', 'Local', 'Packages') : ''
-  ].filter(Boolean);
-
-  for (const packageRoot of packageRoots) {
-    if (!fs.existsSync(packageRoot)) {
-      continue;
-    }
-
-    let dirs = [];
-    try {
-      dirs = fs.readdirSync(packageRoot, { withFileTypes: true })
-        .filter((entry) => entry.isDirectory() && entry.name.toLowerCase().includes('contextide'))
-        .map((entry) => entry.name);
-    } catch (err) {
-      dirs = [];
-    }
-
-    for (const dir of dirs) {
-      candidates.push(path.join(packageRoot, dir, 'LocalState', 'tex', 'texmf-context', 'tex', 'context', 'interface', 'mkiv', 'context-en.xml'));
-    }
-  }
-
-  for (const candidate of candidates) {
-    if (candidate && fs.existsSync(candidate)) {
-      return candidate;
-    }
-  }
-
-  return configured;
+  return configured && fs.existsSync(configured) ? configured : '';
 }
 
 function loadData(configuredTexRootPath, configuredXmlPath) {
@@ -1474,7 +1433,7 @@ function collectWorkspaceTemporaryFiles(workspaceFolders) {
         }
 
         const extension = path.extname(entry.name).toLowerCase();
-        if (disposableExtensions.has(extension)) {
+        if (disposableExtensions.has(extension) || entry.name.toLowerCase().endsWith('.synctex.gz')) {
           files.add(fullPath);
           continue;
         }
@@ -1616,6 +1575,17 @@ function getAcademicPdfViewerExtension() {
   return vscode.extensions.getExtension(ACADEMIC_PDF_VIEWER_EXTENSION_ID);
 }
 
+/** Converts an in-workspace file path to a portable workspace-relative path. */
+function toWorkspaceRelativePath(filePath, workspaceFolderPath) {
+  const absoluteFilePath = path.resolve(filePath);
+  const absoluteWorkspacePath = path.resolve(workspaceFolderPath);
+  const relativePath = path.relative(absoluteWorkspacePath, absoluteFilePath);
+  if (!relativePath || relativePath.startsWith(`..${path.sep}`) || path.isAbsolute(relativePath)) {
+    return '';
+  }
+  return relativePath.split(path.sep).join('/');
+}
+
 function findOpenPdfGroup(pdfPath) {
   const normalizedPdfPath = path.normalize(pdfPath).toLowerCase();
   for (const group of vscode.window.tabGroups.all) {
@@ -1627,6 +1597,63 @@ function findOpenPdfGroup(pdfPath) {
     }
   }
   return null;
+}
+
+function forgetClosedPdfTabs(event) {
+  for (const tab of event.closed || []) {
+    const uri = tab.input && tab.input.uri;
+    if (uri && uri.scheme === 'file' && path.extname(uri.fsPath).toLowerCase() === '.pdf') {
+      openedPdfPaths.delete(path.normalize(uri.fsPath).toLowerCase());
+    }
+  }
+}
+
+/** Returns installed custom editors that can open PDF files. */
+function getInstalledPdfViewers() {
+  const viewers = [];
+  for (const extension of vscode.extensions.all) {
+    if (!extension || extension.id === ACADEMIC_PDF_VIEWER_EXTENSION_ID) {
+      continue;
+    }
+    const customEditors = extension.packageJSON && extension.packageJSON.contributes
+      ? extension.packageJSON.contributes.customEditors
+      : [];
+    for (const editor of customEditors || []) {
+      const selectors = Array.isArray(editor.selector) ? editor.selector : [];
+      const supportsPdf = selectors.some((selector) => {
+        const pattern = String(selector && selector.filenamePattern || '').toLowerCase();
+        return pattern === '*.pdf' || pattern.endsWith('.pdf');
+      });
+      if (supportsPdf && editor.viewType) {
+        viewers.push({
+          extension,
+          viewType: editor.viewType,
+          priority: editor.priority === 'default' ? 0 : 1
+        });
+      }
+    }
+  }
+  return viewers.sort((left, right) => left.priority - right.priority);
+}
+
+/** Opens a PDF with the first installed VS Code PDF custom editor that works. */
+async function openWithInstalledPdfViewer(pdfUri, viewColumn, preserveFocus) {
+  for (const viewer of getInstalledPdfViewers()) {
+    try {
+      if (!viewer.extension.isActive) {
+        await viewer.extension.activate();
+      }
+      await vscode.commands.executeCommand('vscode.openWith', pdfUri, viewer.viewType, {
+        viewColumn,
+        preview: false,
+        preserveFocus
+      });
+      return true;
+    } catch (error) {
+      // Try the next registered PDF editor before using the system viewer.
+    }
+  }
+  return false;
 }
 
 async function openPdfFile(pdfPath, options = {}) {
@@ -1658,15 +1685,6 @@ async function openPdfFile(pdfPath, options = {}) {
     }
   }
 
-  try {
-    const pdfPreviewConfig = vscode.workspace.getConfiguration('pdf-preview');
-    if (pdfPreviewConfig.get('default.spreadMode') !== 'none') {
-      await pdfPreviewConfig.update('default.spreadMode', 'none', vscode.ConfigurationTarget.Global);
-    }
-  } catch (error) {
-    // Some installs do not register the pdf-preview schema early enough for writes.
-  }
-
   const pdfUri = vscode.Uri.file(pdfPath);
   if (pdfExtension) {
     try {
@@ -1683,7 +1701,15 @@ async function openPdfFile(pdfPath, options = {}) {
     }
   }
 
-  await vscode.env.openExternal(pdfUri);
+  const viewColumn = existingGroup ? existingGroup.viewColumn : vscode.ViewColumn.Beside;
+  const openedByInstalledViewer = await openWithInstalledPdfViewer(
+    pdfUri,
+    viewColumn,
+    options.preserveFocus === true
+  );
+  if (!openedByInstalledViewer) {
+    await vscode.env.openExternal(pdfUri);
+  }
   openedPdfPaths.add(normalizedPdfPath);
   return true;
 }
@@ -1718,11 +1744,151 @@ function runProcessWithOutput(command, args, cwd, outputChannel) {
   });
 }
 
+/** Runs a command and captures its standard output and error output. */
+function runProcessCapture(command, args, cwd) {
+  return new Promise((resolve) => {
+    const child = cp.spawn(command, args, {
+      cwd,
+      shell: isWindowsBatch(command),
+      env: process.env
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (data) => { stdout += data.toString(); });
+    child.stderr.on('data', (data) => { stderr += data.toString(); });
+    child.on('error', (error) => resolve({ code: 1, stdout, stderr, error }));
+    child.on('close', (code) => resolve({ code: code === null ? 1 : code, stdout, stderr }));
+  });
+}
+
+/** Resolves the SyncTeX command from the configured TeX tree or PATH. */
+function resolveSyncTexExecutable(texRootPath) {
+  const root = resolveConfiguredPath(texRootPath);
+  if (isExistingDirectory(root)) {
+    const resolved = searchForFile(root, process.platform === 'win32'
+      ? ['synctex.exe', 'miktex-synctex.exe']
+      : ['synctex'], 7);
+    if (resolved) {
+      return resolved;
+    }
+  }
+  return 'synctex';
+}
+
+/** Resolves the ConTeXt mtxrun executable from the configured TeX tree. */
+function resolveMtxRunExecutable(texRootPath) {
+  const root = resolveConfiguredPath(texRootPath);
+  if (!isExistingDirectory(root)) {
+    return '';
+  }
+  const targetNames = process.platform === 'win32'
+    ? ['mtxrun.exe', 'mtxrun.cmd', 'mtxrun.bat']
+    : ['mtxrun', 'mtxrun.sh', 'mtxrun.lua'];
+  return searchForFile(root, targetNames, 8) || '';
+}
+
+/** Parses the first SyncTeX view result into a PDF page location. */
+function parseSyncTexViewResult(output) {
+  const values = {};
+  for (const line of String(output || '').split(/\r?\n/)) {
+    const match = /^(Page|x|y):\s*(-?\d+(?:\.\d+)?)/i.exec(line.trim());
+    if (match) {
+      values[match[1].toLowerCase()] = Number(match[2]);
+      if (Number.isSafeInteger(values.page) && Number.isFinite(values.x) && Number.isFinite(values.y)) {
+        return { pageNumber: values.page, x: values.x, y: values.y };
+      }
+    }
+  }
+  return null;
+}
+
+/** Parses a SyncTeX edit result into a source file location. */
+function parseSyncTexEditResult(output) {
+  const locations = [];
+  let current = null;
+
+  for (const rawLine of String(output || '').split(/\r?\n/)) {
+    const line = rawLine.trim();
+    const input = /^Input:\s*(?:\d+:)?(.+)$/i.exec(line);
+    if (input) {
+      if (current && current.line !== undefined) {
+        locations.push(current);
+      }
+      current = {
+        filePath: input[1].trim(),
+        line: undefined,
+        column: 0
+      };
+      continue;
+    }
+
+    if (!current) {
+      continue;
+    }
+    const sourceLine = /^Line:\s*(-?\d+)$/i.exec(line);
+    if (sourceLine) {
+      current.line = Math.max(Number(sourceLine[1]), 1);
+      continue;
+    }
+    const column = /^Column:\s*(-?\d+)$/i.exec(line);
+    if (column) {
+      current.column = Math.max(Number(column[1]), 0);
+    }
+  }
+
+  if (current && current.line !== undefined) {
+    locations.push(current);
+  }
+  // SyncTeX orders records from the most accurate match to less accurate
+  // fallback matches, so the first complete record is the preferred target.
+  return locations.length > 0 ? locations[0] : null;
+}
+
+/** Parses the ConTeXt mtx-synctex forward result. */
+function parseMtxSyncTexFindResult(output) {
+  const match = /page\s*=\s*(\d+)\s+llx\s*=\s*(-?\d+(?:\.\d+)?)\s+lly\s*=\s*(-?\d+(?:\.\d+)?)/i.exec(String(output || ''));
+  if (!match) {
+    return null;
+  }
+  return {
+    pageNumber: Number(match[1]),
+    x: Number(match[2]),
+    y: Number(match[3])
+  };
+}
+
+/** Parses the ConTeXt mtx-synctex inverse result. */
+function parseMtxSyncTexReportResult(output) {
+  const match = /^\s*["'](.+)["']\s+(-?\d+)\s+(-?\d+)\s*$/m.exec(String(output || ''));
+  if (!match) {
+    return null;
+  }
+  return {
+    filePath: match[1].trim(),
+    line: Math.max(Number(match[2]), 1),
+    column: Math.max(Number(match[3]), 0)
+  };
+}
+
+/** Returns the active Academic PDF Viewer API, activating it when necessary. */
+async function getAcademicPdfViewerApi() {
+  const extension = vscode.extensions.getExtension(ACADEMIC_PDF_VIEWER_EXTENSION_ID);
+  if (!extension) {
+    return null;
+  }
+  try {
+    const api = extension.isActive ? extension.exports : await extension.activate();
+    return api && typeof api.forwardSyncTex === 'function'
+      && api.onDidRequestInverseSyncTex
+      ? api
+      : null;
+  } catch (error) {
+    return null;
+  }
+}
+
 function activate(context) {
-  const suppressPromptKey = 'contextIntellisense.suppressXmlPathPrompt';
   const academicPdfViewerPromptKey = 'contextIntellisense.academicPdfViewerPromptShown';
-  const texRootStateKey = 'contextIntellisense.texRootPath';
-  const mainFileStateKey = 'contextIntellisense.mainFilePath';
   const contextLanguageIds = [
     'context.tex',
     'context.mps',
@@ -1742,17 +1908,35 @@ function activate(context) {
   const codeLensesEmitter = new vscode.EventEmitter();
   context.subscriptions.push(outputChannel, fileDecorationsEmitter, codeLensesEmitter);
 
+  /** Writes a complete JSON diagnostic record for one SyncTeX operation. */
+  function writeSyncTexTrace(direction, details) {
+    outputChannel.appendLine(`[SyncTeX ${direction}]`);
+    outputChannel.appendLine(JSON.stringify({
+      timestamp: new Date().toISOString(),
+      direction,
+      ...details
+    }, null, 2));
+  }
+
   function getWorkspaceRootPath() {
     return vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0
       ? vscode.workspace.workspaceFolders[0].uri.fsPath
       : '';
   }
 
+  /** Returns the configured forward SyncTeX trigger mode. */
+  function getSyncTexMode() {
+    const configured = String(vscode.workspace
+      .getConfiguration('contextIntellisense')
+      .get('synctex', 'doubleclick') || '').toLowerCase();
+    return ['off', 'doubleclick', 'ctrl+click', 'rightclick'].includes(configured)
+      ? configured
+      : 'doubleclick';
+  }
+
   function getConfiguredTexRootPath() {
     const config = vscode.workspace.getConfiguration('contextIntellisense');
-    const configuredPath = String(config.get('texRootPath', '') || '').trim();
-    const persistedPath = String(context.globalState.get(texRootStateKey, '') || '').trim();
-    return configuredPath || persistedPath;
+    return String(config.get('texRootPath', '') || '').trim();
   }
 
   function getConfiguredLegacyXmlPath() {
@@ -1762,9 +1946,7 @@ function activate(context) {
 
   function getConfiguredMainFilePath() {
     const config = vscode.workspace.getConfiguration('contextIntellisense');
-    return context.workspaceState.get(mainFileStateKey, '')
-      || config.get('mainFilePath')
-      || context.globalState.get(mainFileStateKey, '');
+    return String(config.get('mainFilePath', '') || '').trim();
   }
 
   function hasUsableTexRoot(configuredTexRootPath) {
@@ -1786,11 +1968,392 @@ function activate(context) {
   }
 
   function getResolvedContextExecutable() {
-    return resolveContextExecutableFromTexRoot(getResolvedTexRootPath());
+    const texRootPath = getResolvedTexRootPath();
+    return texRootPath ? resolveContextExecutableFromTexRoot(texRootPath) : '';
   }
 
   function getResolvedMainFilePath() {
     return resolveMainFilePath(getConfiguredMainFilePath(), getWorkspaceRootPath());
+  }
+
+  /** Finds the SyncTeX sidecar associated with a generated PDF. */
+  function findSyncTexSidecar(pdfPath) {
+    const stem = pdfPath.slice(0, -path.extname(pdfPath).length);
+    const candidates = [
+      `${stem}.synctex`,
+      `${stem}.synctex.gz`,
+      `${stem}.synctex(busy)`
+    ];
+    return candidates.find(isExistingFile) || '';
+  }
+
+  /** Returns the source name exactly as recorded in a SyncTeX sidecar. */
+  function resolveSyncTexInputName(sourcePath, sidecarPath, pdfPath) {
+    let content;
+    try {
+      const data = fs.readFileSync(sidecarPath);
+      content = sidecarPath.toLowerCase().endsWith('.gz')
+        ? zlib.gunzipSync(data).toString('utf8')
+        : data.toString('utf8');
+    } catch (error) {
+      return sourcePath;
+    }
+
+    const normalizedSourcePath = path.normalize(sourcePath).toLowerCase();
+    for (const line of content.split(/\r?\n/)) {
+      const match = /^Input:\d+:(.+)$/i.exec(line.trim());
+      if (!match) {
+        continue;
+      }
+      const inputName = match[1].trim();
+      const inputPath = path.isAbsolute(inputName)
+        ? inputName
+        : path.resolve(path.dirname(pdfPath), inputName);
+      if (path.normalize(inputPath).toLowerCase() === normalizedSourcePath) {
+        return inputName;
+      }
+    }
+    return sourcePath;
+  }
+
+  /** Resolves a SyncTeX source path relative to the generated PDF. */
+  function resolveSyncTexSourcePath(sourcePath, pdfPath) {
+    const value = String(sourcePath || '').trim();
+    if (!value) {
+      return '';
+    }
+    const unquoted = value.replace(/^['"]|['"]$/g, '');
+    const candidates = [
+      path.isAbsolute(unquoted) ? unquoted : path.resolve(path.dirname(pdfPath), unquoted),
+      path.isAbsolute(unquoted) ? unquoted : path.resolve(getWorkspaceRootPath(), unquoted)
+    ];
+    return candidates.find(isExistingFile) || candidates[0];
+  }
+
+  /** Resolves the PDF produced by the configured main ConTeXt document. */
+  function resolveSyncTexPdfPath(sourcePath) {
+    const mainFilePath = getResolvedMainFilePath();
+    const basePath = isExistingFile(mainFilePath) ? mainFilePath : sourcePath;
+    const pdfPath = path.join(
+      path.dirname(basePath),
+      `${path.basename(basePath, path.extname(basePath))}.pdf`
+    );
+    return isExistingFile(pdfPath) && findSyncTexSidecar(pdfPath) ? pdfPath : '';
+  }
+
+  /** Builds the preferred ConTeXt SyncTeX command and its arguments. */
+  function buildSyncTexCommand(direction, sourcePath, pdfPath, sidecarPath, selection, event) {
+    const cwd = path.dirname(pdfPath);
+    const mtxrun = resolveMtxRunExecutable(getResolvedTexRootPath());
+    if (mtxrun) {
+      const sidecarName = path.relative(cwd, sidecarPath).replace(/\\/g, '/');
+      if (direction === 'forward') {
+        const sourceName = path.relative(cwd, sourcePath).replace(/\\/g, '/');
+        return {
+          executable: mtxrun,
+          args: [
+            '--script', 'synctex', '--find',
+            `--file=${sourceName}`,
+            `--line=${selection.active.line + 1}`,
+            sidecarName
+          ],
+          backend: 'mtxrun'
+        };
+      }
+      return {
+        executable: mtxrun,
+        args: [
+          '--script', 'synctex', '--report',
+          `--page=${event.pageNumber}`,
+          `--x=${event.x}`,
+          `--y=${event.y}`,
+          '--console',
+          sidecarName
+        ],
+        backend: 'mtxrun'
+      };
+    }
+
+    if (direction === 'forward') {
+      const inputName = resolveSyncTexInputName(sourcePath, sidecarPath, pdfPath);
+      return {
+        executable: resolveSyncTexExecutable(getResolvedTexRootPath()),
+        args: [
+          'view',
+          '-i', `${selection.active.line + 1}:${selection.active.character}:${inputName}`,
+          '-o', pdfPath,
+          '-d', path.dirname(sidecarPath)
+        ],
+        backend: 'synctex'
+      };
+    }
+    return {
+      executable: resolveSyncTexExecutable(getResolvedTexRootPath()),
+      args: [
+        'edit',
+        '-o', `${event.pageNumber}:${event.x}:${event.y}:${pdfPath}`,
+        '-d', path.dirname(sidecarPath)
+      ],
+      backend: 'synctex'
+    };
+  }
+
+  /** Runs SyncTeX forward search for an editor position and sends its JSON location to the viewer. */
+  async function forwardSyncTex(editor, options = {}) {
+    const document = editor && editor.document;
+    if (!document || document.languageId !== 'context.tex') {
+      return;
+    }
+
+    const selection = editor.selection;
+    const requestDetails = {
+      editorUri: document.uri.toString(),
+      documentPath: document.uri.fsPath,
+      languageId: document.languageId,
+      selection: selection ? {
+        isEmpty: selection.isEmpty,
+        anchor: { line: selection.anchor.line, character: selection.anchor.character },
+        active: { line: selection.active.line, character: selection.active.character }
+      } : null
+    };
+    const allowEmptySelection = options.allowEmpty === true;
+    requestDetails.trigger = options.trigger || 'unknown';
+    requestDetails.allowEmptySelection = allowEmptySelection;
+    if (!selection || ((!allowEmptySelection && selection.isEmpty)
+      || selection.start.line !== selection.end.line)) {
+      writeSyncTexTrace('forward', {
+        ...requestDetails,
+        trigger: options.trigger || 'unknown',
+        status: 'ignored',
+        reason: allowEmptySelection ? 'Selection spans multiple lines.' : 'No single-line selection.'
+      });
+      return;
+    }
+
+    const pdfPath = resolveSyncTexPdfPath(document.uri.fsPath);
+    if (!pdfPath) {
+      writeSyncTexTrace('forward', {
+        ...requestDetails,
+        status: 'ignored',
+        reason: 'No main PDF or SyncTeX sidecar found.',
+        configuredMainFile: getConfiguredMainFilePath(),
+        resolvedMainFile: getResolvedMainFilePath()
+      });
+      return;
+    }
+
+    const sidecarPath = findSyncTexSidecar(pdfPath);
+    const command = buildSyncTexCommand('forward', document.uri.fsPath, pdfPath, sidecarPath, selection);
+    const { executable, args } = command;
+    const result = await runProcessCapture(
+      executable,
+      args,
+      path.dirname(pdfPath)
+    );
+    const trace = {
+      ...requestDetails,
+      status: result.code === 0 ? 'completed' : 'failed',
+      executable,
+      args,
+      cwd: path.dirname(pdfPath),
+      configuredTexRoot: getConfiguredTexRootPath(),
+      resolvedTexRoot: getResolvedTexRootPath(),
+      pdfPath,
+      sidecarPath,
+      backend: command.backend,
+      exitCode: result.code,
+      stdout: result.stdout,
+      stderr: result.stderr
+    };
+    if (result.code !== 0) {
+      writeSyncTexTrace('forward', trace);
+      outputChannel.appendLine(`SyncTeX forward search failed: ${result.stderr || result.stdout}`);
+      return;
+    }
+
+    const location = command.backend === 'mtxrun'
+      ? parseMtxSyncTexFindResult(result.stdout)
+      : parseSyncTexViewResult(result.stdout);
+    if (!location) {
+      writeSyncTexTrace('forward', { ...trace, status: 'no-location', parsedLocation: null });
+      outputChannel.appendLine(`SyncTeX forward search returned no PDF location. Output: ${result.stdout || result.stderr}`);
+      return;
+    }
+
+    const viewer = await getAcademicPdfViewerApi();
+    if (!viewer) {
+      writeSyncTexTrace('forward', { ...trace, parsedLocation: location, status: 'viewer-api-unavailable' });
+      outputChannel.appendLine('Academic PDF Viewer SyncTeX API is not available.');
+      return;
+    }
+
+    const message = {
+      type: 'synctex.forward',
+      pdfUri: vscode.Uri.file(pdfPath).toString(),
+      pageNumber: location.pageNumber,
+      x: location.x,
+      y: location.y
+    };
+    const accepted = viewer.forwardSyncTex(message);
+    writeSyncTexTrace('forward', { ...trace, parsedLocation: location, viewerMessage: message, viewerAccepted: accepted });
+  }
+
+  /** Finds a visible text editor for a normalized source path. */
+  function findVisibleSourceEditor(sourcePath) {
+    const normalizedSourcePath = path.normalize(sourcePath).toLowerCase();
+    return vscode.window.visibleTextEditors.find((editor) => {
+      return editor.document.uri.scheme === 'file'
+        && path.normalize(editor.document.uri.fsPath).toLowerCase() === normalizedSourcePath;
+    }) || null;
+  }
+
+  /** Finds an already open source tab and returns its editor column. */
+  function findOpenSourceTab(sourcePath) {
+    const normalizedSourcePath = path.normalize(sourcePath).toLowerCase();
+    for (const group of vscode.window.tabGroups.all) {
+      for (const tab of group.tabs) {
+        const uri = tab.input && tab.input.uri;
+        if (uri && uri.scheme === 'file'
+          && path.normalize(uri.fsPath).toLowerCase() === normalizedSourcePath) {
+          return { viewColumn: group.viewColumn };
+        }
+      }
+    }
+    return null;
+  }
+
+  /** Selects an existing normal editor group without targeting the PDF group. */
+  function findNormalEditorColumn(pdfPath) {
+    const pdfGroup = findOpenPdfGroup(pdfPath);
+    const normalGroup = vscode.window.tabGroups.all.find((group) => {
+      if (pdfGroup && group === pdfGroup) {
+        return false;
+      }
+      return group.tabs.some((tab) => {
+        const uri = tab.input && tab.input.uri;
+        return uri && uri.scheme === 'file'
+          && path.extname(uri.fsPath).toLowerCase() !== '.pdf';
+      });
+    });
+    return normalGroup ? normalGroup.viewColumn : vscode.ViewColumn.Beside;
+  }
+
+  /** Opens or reuses a source editor in a normal editor group. */
+  async function showSyncTexSource(document, sourcePath, pdfPath) {
+    const visibleEditor = findVisibleSourceEditor(sourcePath);
+    const openSourceTab = findOpenSourceTab(sourcePath);
+    const viewColumn = visibleEditor
+      ? visibleEditor.viewColumn
+      : openSourceTab
+        ? openSourceTab.viewColumn
+        : findNormalEditorColumn(pdfPath);
+
+    return vscode.window.showTextDocument(document, {
+      viewColumn,
+      preview: false,
+      preserveFocus: false
+    });
+  }
+
+  /** Resolves an inverse SyncTeX event and reveals the corresponding source position. */
+  async function handleInverseSyncTex(event) {
+    if (getSyncTexMode() === 'off') {
+      writeSyncTexTrace('inverse', {
+        status: 'ignored',
+        reason: 'SyncTeX is disabled by contextIntellisense.synctex.',
+        viewerEvent: event
+      });
+      return;
+    }
+    const pdfUri = vscode.Uri.parse(event.pdfUri);
+    const pdfPath = pdfUri.fsPath;
+    const sidecarPath = findSyncTexSidecar(pdfPath);
+    const requestDetails = {
+      viewerEvent: event,
+      pdfUri: event.pdfUri,
+      pdfPath,
+      pdfExists: isExistingFile(pdfPath),
+      sidecarPath,
+      sidecarExists: !!sidecarPath
+    };
+    if (!isExistingFile(pdfPath) || !sidecarPath) {
+      writeSyncTexTrace('inverse', { ...requestDetails, status: 'ignored', reason: 'PDF or SyncTeX sidecar not found.' });
+      return;
+    }
+
+    const command = buildSyncTexCommand('inverse', '', pdfPath, sidecarPath, null, event);
+    const { executable, args } = command;
+    const result = await runProcessCapture(
+      executable,
+      args,
+      path.dirname(pdfPath)
+    );
+    const trace = {
+      ...requestDetails,
+      executable,
+      args,
+      cwd: path.dirname(pdfPath),
+      configuredTexRoot: getConfiguredTexRootPath(),
+      resolvedTexRoot: getResolvedTexRootPath(),
+      backend: command.backend,
+      exitCode: result.code,
+      stdout: result.stdout,
+      stderr: result.stderr
+    };
+    if (result.code !== 0) {
+      writeSyncTexTrace('inverse', { ...trace, status: 'failed' });
+      outputChannel.appendLine(`SyncTeX inverse search failed: ${result.stderr || result.stdout}`);
+      return;
+    }
+
+    const location = command.backend === 'mtxrun'
+      ? parseMtxSyncTexReportResult(result.stdout)
+      : parseSyncTexEditResult(result.stdout);
+    if (!location) {
+      writeSyncTexTrace('inverse', { ...trace, status: 'no-location', parsedLocation: null });
+      outputChannel.appendLine('SyncTeX inverse search returned no source location.');
+      return;
+    }
+
+    const sourcePath = resolveSyncTexSourcePath(location.filePath, pdfPath);
+    if (!isExistingFile(sourcePath)) {
+      writeSyncTexTrace('inverse', { ...trace, status: 'source-not-found', parsedLocation: location, resolvedSourcePath: sourcePath });
+      outputChannel.appendLine(`SyncTeX source file not found: ${location.filePath}`);
+      return;
+    }
+
+    const document = await vscode.workspace.openTextDocument(vscode.Uri.file(sourcePath));
+    const editor = await showSyncTexSource(document, sourcePath, pdfPath);
+    const line = Math.min(location.line - 1, Math.max(document.lineCount - 1, 0));
+    const character = Math.min(location.column, document.lineAt(line).text.length);
+    const position = new vscode.Position(line, character);
+    editor.selection = new vscode.Selection(position, position);
+    editor.revealRange(new vscode.Range(position, position), vscode.TextEditorRevealType.InCenterIfOutsideViewport);
+    writeSyncTexTrace('inverse', {
+      ...trace,
+      status: 'completed',
+      parsedLocation: location,
+      resolvedSourcePath: sourcePath,
+      editorUri: document.uri.toString(),
+      editorPosition: { line: line + 1, character }
+    });
+  }
+
+  /** Subscribes to the Academic PDF Viewer's inverse SyncTeX event. */
+  async function connectAcademicPdfViewerSyncTex() {
+    const viewer = await getAcademicPdfViewerApi();
+    if (!viewer) {
+      return;
+    }
+    context.subscriptions.push(viewer.onDidRequestInverseSyncTex((event) => {
+      void handleInverseSyncTex(event).catch((error) => {
+        writeSyncTexTrace('inverse', {
+          status: 'exception',
+          viewerEvent: event,
+          error: String(error && error.stack ? error.stack : error)
+        });
+      });
+    }));
   }
 
   function refreshDecorations() {
@@ -1798,42 +2361,7 @@ function activate(context) {
     codeLensesEmitter.fire();
   }
 
-  async function enforceCopilotDisableMode() {
-    const extConfig = vscode.workspace.getConfiguration('contextIntellisense');
-    const mode = String(extConfig.get('copilotDisableMode') || 'global');
-    if (mode === 'off') {
-      return;
-    }
-
-    const copilotConfig = vscode.workspace.getConfiguration('github.copilot');
-    const current = copilotConfig.get('enable');
-    const currentMap = current && typeof current === 'object' && !Array.isArray(current) ? current : {};
-    const nextMap = { ...currentMap };
-
-    if (mode === 'global') {
-      nextMap['*'] = false;
-    }
-
-    for (const languageId of contextLanguageIds) {
-      nextMap[languageId] = false;
-    }
-
-    if (JSON.stringify(currentMap) === JSON.stringify(nextMap)) {
-      return;
-    }
-
-    await copilotConfig.update('enable', nextMap, vscode.ConfigurationTarget.Global);
-
-    if (mode === 'global') {
-      const editorConfig = vscode.workspace.getConfiguration('editor');
-      if (editorConfig.get('inlineSuggest.enabled') !== false) {
-        await editorConfig.update('inlineSuggest.enabled', false, vscode.ConfigurationTarget.Global);
-      }
-    }
-  }
-
   async function configureTexRootPathWithPicker() {
-    const config = vscode.workspace.getConfiguration('contextIntellisense');
     const selected = await vscode.window.showOpenDialog({
       canSelectFiles: false,
       canSelectFolders: true,
@@ -1847,15 +2375,8 @@ function activate(context) {
     }
 
     const texRootPath = selected[0].fsPath;
-    // Store the path in the extension's persistent state first. This remains
-    // available even when VS Code cannot write the user's settings file.
-    await context.globalState.update(texRootStateKey, texRootPath);
-    try {
-      await config.update('texRootPath', texRootPath, vscode.ConfigurationTarget.Global);
-    } catch (error) {
-      outputChannel.appendLine(`Could not mirror the TeX root path to VS Code settings: ${error.message || error}`);
-    }
-    await context.globalState.update(suppressPromptKey, false);
+    const config = vscode.workspace.getConfiguration('contextIntellisense');
+    await config.update('texRootPath', texRootPath, vscode.ConfigurationTarget.Global);
     loadData(texRootPath, getConfiguredLegacyXmlPath());
     await applyContextLanguageToOpenDocuments();
     refreshDecorations();
@@ -1904,7 +2425,6 @@ function activate(context) {
   }
 
   async function configureMainFilePathWithPicker() {
-    const config = vscode.workspace.getConfiguration('contextIntellisense');
     const selected = await vscode.window.showOpenDialog({
       canSelectFiles: true,
       canSelectFolders: false,
@@ -1920,14 +2440,14 @@ function activate(context) {
       return false;
     }
 
-    const mainFilePath = selected[0].fsPath;
-    await context.workspaceState.update(mainFileStateKey, mainFilePath);
-    await context.globalState.update(mainFileStateKey, mainFilePath);
-    try {
-      await config.update('mainFilePath', mainFilePath, vscode.ConfigurationTarget.Global);
-    } catch (error) {
-      outputChannel.appendLine(`Could not mirror the main file path to VS Code settings: ${error.message || error}`);
+    const workspaceRootPath = getWorkspaceRootPath();
+    const mainFilePath = toWorkspaceRelativePath(selected[0].fsPath, workspaceRootPath);
+    if (!mainFilePath) {
+      vscode.window.showErrorMessage('ConTeXt IntelliSense: the main file must be inside the current workspace.');
+      return false;
     }
+    const config = vscode.workspace.getConfiguration('contextIntellisense');
+    await config.update('mainFilePath', mainFilePath, vscode.ConfigurationTarget.Workspace);
     refreshDecorations();
     vscode.window.showInformationMessage(`ConTeXt IntelliSense main file set to: ${mainFilePath}`);
     return true;
@@ -1935,30 +2455,18 @@ function activate(context) {
 
   async function maybeRunFirstStartSetup(force = false) {
     const configuredTexRootPath = getConfiguredTexRootPath();
-    if (!force && hasConfiguredTexRoot()) {
-      return;
-    }
-
-    const isSuppressed = context.globalState.get(suppressPromptKey, false);
-    if (!force && isSuppressed) {
+    if (hasConfiguredTexRoot() && !force) {
       return;
     }
 
     const actionChoose = 'Choose ConTeXt distribution tex tree folder';
     const actionNotNow = 'Not now';
-    const actionNever = 'Never ask again';
 
     const selection = await vscode.window.showInformationMessage(
       'ConTeXt IntelliSense needs your ConTeXt distribution tex tree folder for completions, signatures, and compile commands.',
       actionChoose,
-      actionNotNow,
-      actionNever
+      actionNotNow
     );
-
-    if (selection === actionNever) {
-      await context.globalState.update(suppressPromptKey, true);
-      return;
-    }
 
     if (selection !== actionChoose) {
       return;
@@ -1986,7 +2494,8 @@ function activate(context) {
     outputChannel.clear();
     outputChannel.appendLine(`ConTeXt IntelliSense: ${title}`);
     outputChannel.appendLine(`Working directory: ${cwd}`);
-    outputChannel.appendLine(`Command: ${contextExecutable} ${resolvedTargetPath}`);
+    const compileArgs = ['--synctex', resolvedTargetPath];
+    outputChannel.appendLine(`Command: ${contextExecutable} ${compileArgs.join(' ')}`);
     outputChannel.show(true);
 
     await vscode.window.withProgress({
@@ -1994,7 +2503,7 @@ function activate(context) {
       title,
       cancellable: false
     }, async () => {
-      const result = await runProcessWithOutput(contextExecutable, [resolvedTargetPath], cwd, outputChannel);
+      const result = await runProcessWithOutput(contextExecutable, compileArgs, cwd, outputChannel);
       if (result.error) {
         outputChannel.appendLine(String(result.error.message || result.error));
         vscode.window.showErrorMessage(`ConTeXt compilation failed: ${result.error.message || result.error}`);
@@ -2133,8 +2642,6 @@ function activate(context) {
 
   loadData(getConfiguredTexRootPath(), getConfiguredLegacyXmlPath());
   void applyContextLanguageToOpenDocuments();
-  void enforceCopilotDisableMode();
-
   const configureTexRootCommand = vscode.commands.registerCommand('contextIntellisense.configureTexRootPath', async () => {
     await maybeRunFirstStartSetup(true);
   });
@@ -2167,15 +2674,13 @@ function activate(context) {
       return;
     }
 
-    const mainFilePath = candidateUri.fsPath;
-    const config = vscode.workspace.getConfiguration('contextIntellisense');
-    await context.workspaceState.update(mainFileStateKey, mainFilePath);
-    await context.globalState.update(mainFileStateKey, mainFilePath);
-    try {
-      await config.update('mainFilePath', mainFilePath, vscode.ConfigurationTarget.Global);
-    } catch (error) {
-      outputChannel.appendLine(`Could not mirror the main file path to VS Code settings: ${error.message || error}`);
+    const mainFilePath = toWorkspaceRelativePath(candidateUri.fsPath, getWorkspaceRootPath());
+    if (!mainFilePath) {
+      vscode.window.showErrorMessage('ConTeXt IntelliSense: the main file must be inside the current workspace.');
+      return;
     }
+    const config = vscode.workspace.getConfiguration('contextIntellisense');
+    await config.update('mainFilePath', mainFilePath, vscode.ConfigurationTarget.Workspace);
     refreshDecorations();
     vscode.window.showInformationMessage(`ConTeXt IntelliSense main file set to: ${mainFilePath}`);
   });
@@ -2196,6 +2701,34 @@ function activate(context) {
   });
   context.subscriptions.push(showPdfCommand);
 
+  const synctexForwardCommand = vscode.commands.registerCommand('contextIntellisense.synctexForward', async () => {
+    const mode = getSyncTexMode();
+    if (mode !== 'ctrl+click' && mode !== 'rightclick') {
+      return;
+    }
+    await forwardSyncTex(vscode.window.activeTextEditor, {
+      allowEmpty: true,
+      trigger: mode
+    });
+  });
+  context.subscriptions.push(synctexForwardCommand);
+
+  context.subscriptions.push(vscode.window.onDidChangeTextEditorSelection((event) => {
+    if (getSyncTexMode() !== 'doubleclick'
+      || event.kind !== vscode.TextEditorSelectionChangeKind.Mouse) {
+      return;
+    }
+    void forwardSyncTex(event.textEditor, {
+      trigger: 'doubleclick'
+    }).catch((error) => {
+      writeSyncTexTrace('forward', {
+        status: 'exception',
+        editorUri: event.textEditor && event.textEditor.document.uri.toString(),
+        error: String(error && error.stack ? error.stack : error)
+      });
+    });
+  }));
+
   const clearWorkspaceCommand = vscode.commands.registerCommand('contextIntellisense.clearWorkspace', async () => {
     await clearWorkspaceTemporaryFiles();
   });
@@ -2204,6 +2737,12 @@ function activate(context) {
   context.subscriptions.push(vscode.window.onDidChangeActiveTextEditor(() => {
     void applyContextLanguageToOpenDocuments();
   }));
+
+  // A PDF that was closed must be allowed to open again. Without this,
+  // openedPdfPaths incorrectly treats the closed tab as still open.
+  context.subscriptions.push(vscode.window.tabGroups.onDidChangeTabs(forgetClosedPdfTabs));
+
+  void connectAcademicPdfViewerSyncTex();
 
   context.subscriptions.push(vscode.workspace.onDidOpenTextDocument(() => {
     void applyContextLanguageToOpenDocuments();
@@ -2216,15 +2755,7 @@ function activate(context) {
       const configuredPath = String(
         vscode.workspace.getConfiguration('contextIntellisense').get('texRootPath', '') || ''
       ).trim();
-      if (configuredPath) {
-        void context.globalState.update(texRootStateKey, configuredPath);
-      }
       loadData(getConfiguredTexRootPath(), getConfiguredLegacyXmlPath());
-
-      const updatedPath = getConfiguredTexRootPath();
-      if (hasUsableTexRoot(updatedPath)) {
-        void context.globalState.update(suppressPromptKey, false);
-      }
       refreshDecorations();
     }
 
@@ -2232,9 +2763,6 @@ function activate(context) {
       refreshDecorations();
     }
 
-    if (e.affectsConfiguration('contextIntellisense.copilotDisableMode')) {
-      void enforceCopilotDisableMode();
-    }
   }));
 
   const selector = { language: 'context.tex', scheme: 'file' };

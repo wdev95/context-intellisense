@@ -3,7 +3,7 @@
   "displayName": "ConTeXt IntelliSense",
   "description": "ConTeXt syntax highlighting plus context-aware completions with command signatures and key-value hints.",
   "icon": "icon.png",
-  "version": "1.1.1",
+  "version": "1.1.22",
   "publisher": "wdev",
   "repository": {
     "type": "git",
@@ -11,7 +11,8 @@
   },
   "scripts": {
     "build-vsix": "node ./build-vsix.js",
-    "install-vsix": "node ./install-vsix.js"
+    "install-vsix": "node ./install-vsix.js",
+    "install-vsix:insiders": "node ./install-vsix.js --insiders"
   },
   "engines": {
     "vscode": "^1.80.0"
@@ -54,9 +55,20 @@
         "icon": "$(file-pdf)"
       },
       {
+        "command": "contextIntellisense.synctexForward",
+        "title": "ConTeXt IntelliSense: SyncTeX Forward"
+      },
+      {
         "command": "contextIntellisense.clearWorkspace",
         "title": "Clear Workspace",
         "icon": "$(trash)"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "contextIntellisense.synctexForward",
+        "key": "ctrl+click",
+        "when": "editorTextFocus && resourceLangId == context.tex && config.contextIntellisense.synctex == ctrl+click"
       }
     ],
     "menus": {
@@ -87,6 +99,13 @@
           "command": "contextIntellisense.clearWorkspace",
           "group": "navigation@13",
           "when": "resourceScheme == file && resourceLangId == context.tex"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "contextIntellisense.synctexForward",
+          "group": "navigation@20",
+          "when": "resourceLangId == context.tex && config.contextIntellisense.synctex == rightclick"
         }
       ]
     },
@@ -299,62 +318,19 @@
         "path": "./syntaxes/context-syntax-json.json"
       }
     ],
-    "configurationDefaults": {
-      "files.associations": {
-        "*.tex": "context.tex",
-        "*.mkil": "context.tex",
-        "*.mkiv": "context.tex",
-        "*.mkix": "context.tex",
-        "*.mklx": "context.tex",
-        "*.mkvi": "context.tex",
-        "*.mkxi": "context.tex",
-        "*.mkxl": "context.tex",
-        "*.lua": "context.lua",
-        "*.cld": "context.cld",
-        "*.tuc": "context.cld"
-      },
-      "github.copilot.enable": {
-        "*": false,
-        "context.tex": false,
-        "context.mps": false,
-        "context.lua": false,
-        "context.cld": false,
-        "context.xml": false,
-        "context.bibtex": false,
-        "context.sql": false,
-        "context.bnf": false,
-        "context.cpp": false,
-        "context.pdf": false,
-        "context.json": false
-      },
-      "[context.tex]": {
-        "editor.quickSuggestions": {
-          "other": true,
-          "comments": false,
-          "strings": true
-        },
-        "editor.quickSuggestionsDelay": 0,
-        "editor.suggestOnTriggerCharacters": true,
-        "editor.wordBasedSuggestions": "off",
-        "editor.suggest.showWords": false,
-        "editor.snippetSuggestions": "none",
-        "editor.suggest.showSnippets": false,
-        "editor.inlineSuggest.enabled": false,
-        "editor.tabCompletion": "on",
-        "editor.suggest.snippetsPreventQuickSuggestions": false
-      }
-    },
     "configuration": {
       "title": "ConTeXt IntelliSense",
       "properties": {
         "contextIntellisense.texRootPath": {
           "type": "string",
           "default": "",
+          "scope": "machine",
           "description": "Absolute path to the root of your ConTeXt / TeX installation. The extension finds context-en.xml and the context executable automatically below this folder."
         },
         "contextIntellisense.mainFilePath": {
           "type": "string",
           "default": "",
+          "scope": "resource",
           "description": "Absolute path to the project main .tex file that should be compiled from the main-file command."
         },
         "contextIntellisense.openPdfAfterCompile": {
@@ -362,15 +338,23 @@
           "default": true,
           "description": "Open the generated PDF automatically after a successful compile. Uses Academic PDF Viewer (ovolab-veritas.academic-pdf-viewer) when installed."
         },
-        "contextIntellisense.copilotDisableMode": {
+        "contextIntellisense.synctex": {
           "type": "string",
           "enum": [
-            "global",
-            "context-only",
-            "off"
+            "off",
+            "doubleclick",
+            "ctrl+click",
+            "rightclick"
           ],
-          "default": "global",
-          "markdownDescription": "Controls how this extension enforces Copilot disabling: `global` disables Copilot everywhere, `context-only` disables it for ConTeXt language IDs, `off` does not enforce changes."
+          "enumDescriptions": [
+            "Disable both forward and inverse SyncTeX.",
+            "Run forward SyncTeX after a double-click selection.",
+            "Run forward SyncTeX with Ctrl+Click.",
+            "Run forward SyncTeX from the editor context menu."
+          ],
+          "default": "doubleclick",
+          "scope": "window",
+          "description": "Selects how SyncTeX forward search is triggered from a ConTeXt editor. Inverse search from the PDF viewer remains available in every mode."
         }
       }
     }
