@@ -34,10 +34,6 @@ function normalizeTypeLabel(value) {
   return normalized.toUpperCase();
 }
 
-function escapeMarkdownText(value) {
-  return String(value || '').replace(/([\\`*_{}\[\]()#+\-.!|])/g, '\\$1');
-}
-
 function escapeHtmlText(value) {
   return String(value || '')
     .replace(/&/g, '&amp;')
@@ -128,8 +124,7 @@ function getDelimiterInfo(delimiter) {
   }
 }
 
-function describeArgumentSpec(spec, options = {}) {
-  const forDocumentation = options.forDocumentation === true;
+function describeArgumentSpec(spec) {
   const keywordTypes = uniqueValues(spec.keywordTypes || []).map(normalizeTypeLabel);
   const parameterNames = uniqueValues(spec.parameterNames || []);
 
@@ -143,12 +138,6 @@ function describeArgumentSpec(spec, options = {}) {
     core = '...';
   } else if (spec.kind === 'content') {
     core = 'CONTENT';
-  }
-
-  if (forDocumentation) {
-    if (spec.list) {
-      core += '';
-    }
   }
 
   return core;
@@ -203,11 +192,9 @@ function buildSignatureParts(commandName, argumentSpecs, options = {}) {
         parameterRows.push(['KEY', 'VALUE']);
       }
 
-      const specParameterNames = uniqueValues(spec.parameterNames || []);
-      const fallbackParameterNames = (!spec.allowsArbitraryKeys && specParameterNames.length === 0)
-        ? (entry ? uniqueValues(Array.from(entry.parameters || [])) : [])
-        : [];
-      const parameterNames = specParameterNames.length > 0 ? specParameterNames : fallbackParameterNames;
+      const parameterNames = spec.allowsArbitraryKeys
+        ? []
+        : getArgumentParameterNames(spec, entry);
       for (const parameterName of parameterNames) {
         if (activeAssignmentKey && specIndex === activeParameterIndex && parameterName !== activeAssignmentKey) {
           continue;
@@ -267,6 +254,18 @@ function makeCommandInsertText(commandName, argumentSpecs) {
     return commandName;
   }
   return new vscode.SnippetString(`${commandName}${argSnippet.text}`);
+}
+
+/** Builds the visible argument shape for a command completion variant. */
+function makeArgumentPreview(commandName, argumentSpecs) {
+  const argumentsText = (argumentSpecs || [])
+    .filter(spec => spec.kind !== 'content')
+    .map(spec => {
+      const delimiter = getDelimiterInfo(spec.delimiter);
+      return `${delimiter.open}${delimiter.close}`;
+    })
+    .join('');
+  return `\\${commandName}${argumentsText}`;
 }
 
 function parseAttributes(tag) {
@@ -364,6 +363,7 @@ function parseCommandMap(xmlText) {
       if (kind === 'assignments') {
         const parameterNames = [];
         const parameterTypes = new Map();
+        const parameterSources = getReferenceNames(body);
         let hasParameterTags = false;
         let allowsArbitraryKeys = false;
         const parameterRe = /<cd:parameter\b([^>]*?)(?:\/\>|>([\s\S]*?)<\/cd:parameter>)/g;
@@ -394,7 +394,7 @@ function parseCommandMap(xmlText) {
           }
         }
 
-        out.push({ kind, optional, delimiter, list, parameterNames, parameterTypes, hasParameterTags, allowsArbitraryKeys });
+        out.push({ kind, optional, delimiter, list, parameterNames, parameterTypes, parameterSources, hasParameterTags, allowsArbitraryKeys });
         continue;
       }
 
@@ -432,24 +432,6 @@ function parseCommandMap(xmlText) {
     }
 
     return count;
-  }
-
-  function makeRequiredBracketSnippet(count, startIndex = 1) {
-    if (count <= 0) {
-      return { text: '', nextIndex: startIndex };
-    }
-
-    const parts = [];
-    let index = startIndex;
-    for (let i = 0; i < count; i++) {
-      parts.push(`[${'${' + index + '}'}]`);
-      index++;
-    }
-
-    return {
-      text: parts.join(''),
-      nextIndex: index
-    };
   }
 
   function registerCompletion(label, item, meta = {}) {
@@ -537,19 +519,6 @@ function parseCommandMap(xmlText) {
     return score;
   }
 
-  function selectBestCompletionForLabel(label, candidates) {
-    let best = candidates[0];
-    let bestScore = scoreCompletionCandidate(label, best);
-    for (let i = 1; i < candidates.length; i++) {
-      const score = scoreCompletionCandidate(label, candidates[i]);
-      if (score > bestScore) {
-        best = candidates[i];
-        bestScore = score;
-      }
-    }
-    return best;
-  }
-
   function makeEnvironmentInsertText(startName, argumentSpecs) {
     const stopName = startName.startsWith('start') && startName.length > 5
       ? `stop${startName.slice(5)}`
@@ -557,6 +526,17 @@ function parseCommandMap(xmlText) {
 
     const argumentSnippet = buildArgumentSnippet(argumentSpecs, 1);
     return new vscode.SnippetString(`${startName}${argumentSnippet.text}\n\t$0\n\\${stopName}`);
+  }
+
+  /** Returns valid forms created by omitting leading optional arguments. */
+  function getArgumentSpecVariants(argumentSpecs) {
+    let firstRequired = 0;
+    while (firstRequired < argumentSpecs.length && argumentSpecs[firstRequired].optional) {
+      firstRequired += 1;
+    }
+    return Array.from({ length: firstRequired + 1 }, (_, index) =>
+      argumentSpecs.slice(firstRequired - index)
+    );
   }
 
   const commandRe = /<cd:command\b[^>]*\/>|<cd:command\b[^>]*>[\s\S]*?<\/cd:command>/g;
@@ -610,6 +590,7 @@ function parseCommandMap(xmlText) {
             type,
             variant,
             requiredBracketCount,
+            argumentSpecs,
             environmentStartName: startName
           });
           registerCommandArgumentSpecs(startName, argumentSpecs, variant);
@@ -628,6 +609,7 @@ function parseCommandMap(xmlText) {
           type,
           variant,
           requiredBracketCount,
+          argumentSpecs,
           environmentStartName: startName
         });
         registerCommandArgumentSpecs(startName, argumentSpecs, variant);
@@ -643,6 +625,7 @@ function parseCommandMap(xmlText) {
         type,
         variant,
         requiredBracketCount,
+        argumentSpecs,
         commandName: name
       });
       registerCommandArgumentSpecs(name, argumentSpecs, variant);
@@ -658,6 +641,7 @@ function parseCommandMap(xmlText) {
           type,
           variant,
           requiredBracketCount,
+          argumentSpecs,
           commandName: instance
         });
         registerCommandArgumentSpecs(instance, argumentSpecs, variant);
@@ -864,13 +848,40 @@ function parseCommandMap(xmlText) {
     if (!candidates || candidates.length === 0) {
       continue;
     }
-    const best = selectBestCompletionForLabel(label, candidates);
-    commandCompletions.push({
-      label,
-      kind: best.kind,
-      insertText: best.insertText,
-      sortWeight: best.sortWeight
-    });
+    const variants = new Map();
+    for (const candidate of candidates) {
+      const argumentVariants = candidate.meta && candidate.meta.argumentSpecs
+        ? getArgumentSpecVariants(candidate.meta.argumentSpecs)
+        : [null];
+      for (const argumentSpecs of argumentVariants) {
+        const meta = argumentSpecs
+          ? { ...candidate.meta, argumentSpecs }
+          : candidate.meta;
+        const commandName = meta.commandName || label.slice(1);
+        const insertText = argumentSpecs
+          ? (meta.type === 'environment'
+            ? makeEnvironmentInsertText(commandName, argumentSpecs)
+            : makeCommandInsertText(commandName, argumentSpecs))
+          : candidate.insertText;
+        const expanded = { ...candidate, insertText, meta };
+        const key = getInsertTextValue(expanded);
+        const current = variants.get(key);
+        if (!current || scoreCompletionCandidate(label, expanded) > scoreCompletionCandidate(label, current)) {
+          variants.set(key, expanded);
+        }
+      }
+    }
+    let variantIndex = 0;
+    for (const variant of variants.values()) {
+      commandCompletions.push({
+        label,
+        kind: variant.kind,
+        insertText: variant.insertText,
+        sortWeight: variant.sortWeight,
+        argumentSpecs: variant.meta.argumentSpecs || [],
+        variantIndex: variantIndex++
+      });
+    }
   }
 
   const commandArgumentSpecs = new Map();
@@ -1071,13 +1082,38 @@ function loadData(configuredTexRootPath, configuredXmlPath) {
   };
 }
 
-function getCommandForBracketContext(linePrefix) {
-  const m = linePrefix.match(/\\([A-Za-z@]+)\[[^\]]*$/);
-  return m ? m[1] : null;
+/** Counts consecutive square-bracket arguments after a command. */
+function countBracketArguments(text) {
+  let count = 0;
+  let position = 0;
+
+  while (position < text.length) {
+    while (/\s/.test(text[position] || '')) {
+      position++;
+    }
+    if (text[position] !== '[') {
+      break;
+    }
+
+    count++;
+    let depth = 1;
+    position++;
+    while (position < text.length && depth > 0) {
+      if (text[position] === '[') {
+        depth++;
+      } else if (text[position] === ']') {
+        depth--;
+      }
+      position++;
+    }
+  }
+
+  return count;
 }
 
-function getBracketInvocationContext(linePrefix) {
-  const m = linePrefix.match(/\\([A-Za-z@]+)((?:\[[^\]]*\])*)(\[[^\]]*)$/);
+/** Returns the square-bracket argument under the cursor. */
+function getBracketInvocationContext(linePrefix, lineSuffix = '') {
+  const m = linePrefix.match(/\\([A-Za-z@]+)((?:\s*\[[^\]]*\])*)(\s*\[[^\]]*)$/);
   if (!m) {
     return null;
   }
@@ -1085,14 +1121,87 @@ function getBracketInvocationContext(linePrefix) {
   const commandName = m[1];
   const completedBrackets = m[2] || '';
   const openBracketPart = m[3] || '';
-  const currentSegment = openBracketPart.startsWith('[') ? openBracketPart.slice(1) : openBracketPart;
+  const currentSegment = openBracketPart.replace(/^\s*\[/, '');
   const completedCount = (completedBrackets.match(/\[/g) || []).length;
+  const commandToken = `\\${commandName}`;
+  const commandIndex = linePrefix.lastIndexOf(commandToken);
+  const argumentText = linePrefix.slice(commandIndex + commandToken.length) + lineSuffix;
 
   return {
     commandName,
     argumentIndex: completedCount,
+    bracketCount: Math.max(completedCount + 1, countBracketArguments(argumentText)),
     currentSegment
   };
+}
+
+/** Returns the current square-bracket argument context at a document position. */
+function getDocumentBracketContext(document, position) {
+  const line = document.lineAt(position.line).text;
+  const prefix = line.slice(0, position.character);
+  const suffix = line.slice(position.character);
+  return getBracketInvocationContext(prefix, suffix);
+}
+
+/** Returns the current square-bracket argument context of an editor. */
+function getEditorBracketContext(editor) {
+  return getDocumentBracketContext(editor.document, editor.selection.active);
+}
+
+/** Returns an empty argument at a document position. */
+function getEmptyArgumentContext(document, position) {
+  const context = getDocumentBracketContext(document, position);
+  return context && !context.currentSegment.trim() && getCommandEntry(context.commandName)
+    ? context
+    : null;
+}
+
+/** Opens completion suggestions when the cursor enters an empty argument. */
+function triggerEmptyArgumentSuggestions(editor, refresh = false) {
+  if (!editor || editor.document.languageId !== 'context.tex') {
+    return;
+  }
+
+  const context = getEmptyArgumentContext(editor.document, editor.selection.active);
+  const key = context
+    ? `${editor.document.uri.toString()}:${editor.selection.active.line}:${editor.selection.active.character}`
+    : '';
+  if (!context || triggerEmptyArgumentSuggestions.lastPosition === key) {
+    if (!context) {
+      triggerEmptyArgumentSuggestions.lastPosition = '';
+    }
+    return;
+  }
+
+  triggerEmptyArgumentSuggestions.lastPosition = key;
+  if (!refresh) {
+    void vscode.commands.executeCommand('editor.action.triggerSuggest');
+    return;
+  }
+
+  void vscode.commands.executeCommand('hideSuggestWidget')
+    .then(() => setTimeout(() => vscode.commands.executeCommand('editor.action.triggerSuggest'), 0));
+}
+
+/** Shows argument information whenever the cursor is inside an argument. */
+function triggerArgumentInformation(editor, refresh = false) {
+  if (!editor || editor.document.languageId !== 'context.tex') {
+    return;
+  }
+
+  const context = getEditorBracketContext(editor);
+  if (!context) {
+    void vscode.commands.executeCommand('hideSuggestWidget');
+    return;
+  }
+
+  void vscode.commands.executeCommand('editor.action.triggerParameterHints');
+  triggerEmptyArgumentSuggestions(editor, refresh);
+}
+
+/** Evaluates argument context after VS Code has applied the new selection. */
+function scheduleArgumentInformation(editor, refresh = false) {
+  setTimeout(() => triggerArgumentInformation(editor, refresh), 0);
 }
 
 function getCommandArgumentSpec(commandName, argumentIndex) {
@@ -1110,6 +1219,104 @@ function getCommandArgumentSpec(commandName, argumentIndex) {
 
 function getCommandSignatureSpecs(commandName) {
   return cache.commandArgumentSpecs.get(commandName) || [];
+}
+
+/** Returns direct and inherited keys available in an assignment argument. */
+function getArgumentParameterNames(argumentSpec, entry) {
+  const names = [
+    ...(argumentSpec ? argumentSpec.parameterNames || [] : []),
+    ...Array.from(entry && entry.parameters ? entry.parameters : [])
+  ];
+
+  for (const sourceName of argumentSpec && argumentSpec.parameterSources || []) {
+    const source = getCommandEntry(sourceName);
+    if (source) {
+      names.push(...source.parameters);
+    }
+  }
+
+  return uniqueValues(names);
+}
+
+const EXTERNAL_FIGURE_EXTENSIONS = new Set([
+  'pdf', 'png', 'jpg', 'jpeg', 'jbig', 'jb2', 'jp2', 'jpx',
+  'mps', 'svg', 'eps', 'gif', 'tif', 'tiff', 'webp', 'u3d', 'swf'
+]);
+
+/** Returns workspace files accepted by ConTeXt's externalfigure command. */
+async function createExternalFigureItems() {
+  const files = await vscode.workspace.findFiles(
+    '**/*.{pdf,png,jpg,jpeg,jbig,jb2,jp2,jpx,mps,svg,eps,gif,tif,tiff,webp,u3d,swf}',
+    '**/{.git,node_modules}/**'
+  );
+  return files
+    .filter(uri => EXTERNAL_FIGURE_EXTENSIONS.has(path.extname(uri.fsPath).slice(1).toLowerCase()))
+    .sort((left, right) => left.fsPath.localeCompare(right.fsPath))
+    .map(uri => {
+      const value = vscode.workspace.asRelativePath(uri, false).replace(/\\/g, '/');
+      const item = new vscode.CompletionItem(value, vscode.CompletionItemKind.File);
+      item.insertText = value;
+      item.filterText = value;
+      item.detail = 'Workspace file';
+      return item;
+    });
+}
+
+/** Extracts BibTeX entry keys from a source file. */
+function parseBibtexKeys(content) {
+  const keys = [];
+  const entryPattern = /@([a-z]+)\s*\{\s*([^,\s]+)\s*,/gi;
+  let match;
+  while ((match = entryPattern.exec(content)) !== null) {
+    if (!['string', 'preamble', 'comment'].includes(match[1].toLowerCase())) {
+      keys.push(match[2]);
+    }
+  }
+  return keys;
+}
+
+/** Returns BibTeX keys from every workspace .bib file. */
+async function createCitationItems() {
+  const files = await vscode.workspace.findFiles('**/*.bib', '**/{.git,node_modules}/**');
+  const keys = new Set();
+  for (const uri of files) {
+    try {
+      for (const key of parseBibtexKeys(await fs.promises.readFile(uri.fsPath, 'utf8'))) {
+        keys.add(key);
+      }
+    } catch {
+      // Ignore files that disappear or cannot be read while completion runs.
+    }
+  }
+  return Array.from(keys).sort((left, right) => left.localeCompare(right)).map(key => {
+    const item = new vscode.CompletionItem(key, vscode.CompletionItemKind.Reference);
+    item.insertText = key;
+    item.filterText = key;
+    item.detail = 'BibTeX key';
+    return item;
+  });
+}
+
+/** Returns completion items for special workspace-backed bracket arguments. */
+async function createWorkspaceArgumentItems(commandName) {
+  if (commandName === 'externalfigure') {
+    return createExternalFigureItems();
+  }
+  if (commandName === 'cite') {
+    return createCitationItems();
+  }
+  return null;
+}
+
+/** Returns whether a workspace-backed completion belongs to this argument. */
+function isWorkspaceArgument(commandName, argumentIndex, context) {
+  if (commandName === 'externalfigure') {
+    return argumentIndex === 0;
+  }
+  if (commandName === 'cite') {
+    return context && argumentIndex === context.bracketCount - 1;
+  }
+  return false;
 }
 
 function getActiveParameterIndex(commandName, linePrefix) {
@@ -1190,13 +1397,19 @@ function createCommandItems(prefixPart) {
       continue;
     }
 
-    const item = new vscode.CompletionItem(label, completion.kind);
+    const argumentSpecs = completion.argumentSpecs || getCommandSignatureSpecs(compareText);
+    const item = new vscode.CompletionItem(makeArgumentPreview(compareText, argumentSpecs), completion.kind);
     item.insertText = completion.insertText;
-    item.sortText = `${completion.sortWeight}_${compareText}`;
+    item.sortText = `${completion.sortWeight}_${compareText}_${completion.variantIndex || 0}`;
     item.filterText = label;
-    const signatureParts = buildSignatureParts(compareText, getCommandSignatureSpecs(compareText));
+    const signatureParts = buildSignatureParts(compareText, argumentSpecs);
     item.detail = signatureParts.label || 'ConTeXt IntelliSense';
-    item.documentation = undefined;
+    if (argumentSpecs.length > 0) {
+      item.command = {
+        command: 'contextIntellisense.triggerArgumentContext',
+        title: 'Trigger argument information'
+      };
+    }
 
     items.push(item);
   }
@@ -1244,11 +1457,7 @@ function createKeywordAndParameterItems(commandName, currentSegment, argumentInd
     const out = [];
 
     if (!(argumentSpec && argumentSpec.kind === 'assignments' && argumentSpec.allowsArbitraryKeys)) {
-      const specParameterNames = argumentSpec ? uniqueValues(argumentSpec.parameterNames || []) : [];
-      const fallbackParameterNames = (argumentSpec && argumentSpec.kind === 'assignments' && specParameterNames.length === 0 && !argumentSpec.allowsArbitraryKeys)
-        ? uniqueValues(Array.from(entry.parameters || []))
-        : [];
-      const parameterNames = specParameterNames.length > 0 ? specParameterNames : fallbackParameterNames;
+      const parameterNames = getArgumentParameterNames(argumentSpec, entry);
 
       for (const parameter of parameterNames) {
         const label = `${parameter}=`;
@@ -1754,23 +1963,8 @@ function isWindowsBatch(commandPath) {
   return process.platform === 'win32' && /\.(cmd|bat)$/i.test(commandPath);
 }
 
-function runProcessWithOutput(command, args, cwd, outputChannel) {
-  return new Promise((resolve) => {
-    const child = cp.spawn(command, args, {
-      cwd,
-      shell: isWindowsBatch(command),
-      env: process.env
-    });
-
-    child.stdout.on('data', (data) => outputChannel.append(data.toString()));
-    child.stderr.on('data', (data) => outputChannel.append(data.toString()));
-    child.on('error', (error) => resolve({ code: 1, error }));
-    child.on('close', (code) => resolve({ code: code === null ? 1 : code }));
-  });
-}
-
-/** Runs a command and captures its standard output and error output. */
-function runProcessCapture(command, args, cwd) {
+/** Runs a process and optionally streams its output to an output channel. */
+function runProcess(command, args, cwd, outputChannel = null) {
   return new Promise((resolve) => {
     const child = cp.spawn(command, args, {
       cwd,
@@ -1779,8 +1973,16 @@ function runProcessCapture(command, args, cwd) {
     });
     let stdout = '';
     let stderr = '';
-    child.stdout.on('data', (data) => { stdout += data.toString(); });
-    child.stderr.on('data', (data) => { stderr += data.toString(); });
+    child.stdout.on('data', (data) => {
+      const text = data.toString();
+      stdout += text;
+      outputChannel?.append(text);
+    });
+    child.stderr.on('data', (data) => {
+      const text = data.toString();
+      stderr += text;
+      outputChannel?.append(text);
+    });
     child.on('error', (error) => resolve({ code: 1, stdout, stderr, error }));
     child.on('close', (code) => resolve({ code: code === null ? 1 : code, stdout, stderr }));
   });
@@ -1959,6 +2161,13 @@ function activate(context) {
       : 'doubleclick';
   }
 
+  function getSyncTexIntegrationMode() {
+    const configured = String(vscode.workspace
+      .getConfiguration('contextIntellisense')
+      .get('synctexmode', 'API') || '').toLowerCase();
+    return configured === 'bridge' ? 'bridge' : 'api';
+  }
+
   function getConfiguredTexRootPath() {
     const config = vscode.workspace.getConfiguration('contextIntellisense');
     return String(config.get('texRootPath', '') || '').trim();
@@ -1985,9 +2194,26 @@ function activate(context) {
     return toWorkspaceRelativePath(resolved, workspaceRoot) ? resolved : '';
   }
 
-  function hasUsableTexRoot(configuredTexRootPath) {
-    const resolved = resolveTexRootPath(configuredTexRootPath, getConfiguredLegacyXmlPath());
-    return !!resolved && isExistingDirectory(resolved);
+  /** Resolves a PDF URI from the Academic PDF Viewer API to a local path. */
+  function resolveViewerPdfPath(pdfUri) {
+    const value = String(pdfUri || '').trim();
+    if (!value) {
+      return '';
+    }
+
+    try {
+      const uri = vscode.Uri.parse(value);
+      if (uri.scheme === 'file') {
+        return uri.fsPath;
+      }
+      if (uri.scheme) {
+        return '';
+      }
+    } catch (error) {
+      return '';
+    }
+
+    return path.isAbsolute(value) ? value : resolveWorkspaceRelativePath(value);
   }
 
   function hasConfiguredTexRoot() {
@@ -2021,6 +2247,24 @@ function activate(context) {
       `${stem}.synctex(busy)`
     ];
     return candidates.find(isExistingFile) || '';
+  }
+
+  async function ensureGzippedSyncTexSidecar(pdfPath) {
+    const plainPath = `${pdfPath.slice(0, -path.extname(pdfPath).length)}.synctex`;
+    const compressedPath = `${plainPath}.gz`;
+    if (!isExistingFile(plainPath)) {
+      return false;
+    }
+    const content = await fs.promises.readFile(plainPath);
+    await fs.promises.writeFile(compressedPath, zlib.gzipSync(content));
+    return true;
+  }
+
+  async function configureAcademicPdfViewerBridge(pdfPath) {
+    const config = vscode.workspace.getConfiguration('academicPdfViewer');
+    await config.update('tex.bridge.enabled', true, vscode.ConfigurationTarget.Workspace);
+    await config.update('tex.bridge.executable', resolveSyncTexExecutable(getResolvedTexRootPath()), vscode.ConfigurationTarget.Workspace);
+    await config.update('tex.bridge.pdfPath', pdfPath, vscode.ConfigurationTarget.Workspace);
   }
 
   /** Returns the source name exactly as recorded in a SyncTeX sidecar. */
@@ -2135,7 +2379,9 @@ function activate(context) {
 
     if (direction === 'forward') {
       const recordedInputName = resolveSyncTexInputName(sourcePath, sidecarPath, pdfPath);
-      const inputName = toSyncTexRelativePath(recordedInputName, cwd, path.dirname(pdfPath));
+      const inputName = path.isAbsolute(recordedInputName)
+        ? recordedInputName.split(path.sep).join('/')
+        : recordedInputName.replace(/\\/g, '/');
       const relativePdfPath = toSyncTexRelativePath(pdfPath, cwd);
       return {
         executable: resolveSyncTexExecutable(getResolvedTexRootPath()),
@@ -2165,6 +2411,22 @@ function activate(context) {
   async function forwardSyncTex(editor, options = {}) {
     const document = editor && editor.document;
     if (!document || document.languageId !== 'context.tex') {
+      return;
+    }
+
+    if (getSyncTexIntegrationMode() === 'bridge') {
+      if (getSyncTexMode() === 'off') {
+        return;
+      }
+      try {
+        const accepted = await vscode.commands.executeCommand('academicPdfViewer.tex.synctexForwardFromCursor');
+        if (accepted !== false) {
+          return;
+        }
+        outputChannel.appendLine('Academic PDF Viewer bridge returned no location; using ConTeXt/API forward search.');
+      } catch (error) {
+        outputChannel.appendLine(`Academic PDF Viewer bridge forward search failed: ${error.message || error}`);
+      }
       return;
     }
 
@@ -2208,7 +2470,7 @@ function activate(context) {
     const sidecarPath = findSyncTexSidecar(pdfPath);
     const command = buildSyncTexCommand('forward', document.uri.fsPath, pdfPath, sidecarPath, selection);
     const { executable, args } = command;
-    const result = await runProcessCapture(
+    const result = await runProcess(
       executable,
       args,
       command.cwd
@@ -2252,7 +2514,7 @@ function activate(context) {
 
     const message = {
       type: 'synctex.forward',
-      pdfUri: toWorkspaceRelativePath(pdfPath, getWorkspaceRootPath()),
+      pdfUri: vscode.Uri.file(pdfPath).toString(),
       pageNumber: location.pageNumber,
       x: location.x,
       y: location.y
@@ -2325,6 +2587,9 @@ function activate(context) {
 
   /** Resolves an inverse SyncTeX event and reveals the corresponding source position. */
   async function handleInverseSyncTex(event) {
+    if (getSyncTexIntegrationMode() !== 'api') {
+      return;
+    }
     if (getSyncTexMode() === 'off') {
       writeSyncTexTrace('inverse', {
         status: 'ignored',
@@ -2333,7 +2598,7 @@ function activate(context) {
       });
       return;
     }
-    const pdfPath = resolveWorkspaceRelativePath(event.pdfUri);
+    const pdfPath = resolveViewerPdfPath(event.pdfUri);
     const sidecarPath = findSyncTexSidecar(pdfPath);
     const requestDetails = {
       viewerEvent: { ...event, pdfUri: formatSyncTexTraceUri(event.pdfUri) },
@@ -2350,7 +2615,7 @@ function activate(context) {
 
     const command = buildSyncTexCommand('inverse', '', pdfPath, sidecarPath, null, event);
     const { executable, args } = command;
-    const result = await runProcessCapture(
+    const result = await runProcess(
       executable,
       args,
       command.cwd
@@ -2413,6 +2678,9 @@ function activate(context) {
 
   /** Subscribes to the Academic PDF Viewer's inverse SyncTeX event. */
   async function connectAcademicPdfViewerSyncTex() {
+    if (getSyncTexIntegrationMode() !== 'api') {
+      return;
+    }
     const viewer = await getAcademicPdfViewerApi();
     if (!viewer) {
       return;
@@ -2575,7 +2843,7 @@ function activate(context) {
       title,
       cancellable: false
     }, async () => {
-      const result = await runProcessWithOutput(contextExecutable, compileArgs, cwd, outputChannel);
+      const result = await runProcess(contextExecutable, compileArgs, cwd, outputChannel);
       if (result.error) {
         outputChannel.appendLine(String(result.error.message || result.error));
         vscode.window.showErrorMessage(`ConTeXt compilation failed: ${result.error.message || result.error}`);
@@ -2588,6 +2856,19 @@ function activate(context) {
       }
 
       outputChannel.appendLine('Compilation completed successfully.');
+      if (getSyncTexIntegrationMode() === 'bridge') {
+        try {
+          const compressed = await ensureGzippedSyncTexSidecar(pdfPath);
+          if (compressed) {
+            await configureAcademicPdfViewerBridge(pdfPath);
+            outputChannel.appendLine(`SyncTeX bridge configured for: ${pdfPath}`);
+          } else {
+            outputChannel.appendLine(`SyncTeX bridge sidecar not found: ${pdfPath}`);
+          }
+        } catch (error) {
+          outputChannel.appendLine(`SyncTeX bridge setup failed: ${error.message || error}`);
+        }
+      }
       if (isExistingFile(pdfPath)) {
         await reloadActiveAcademicPdf();
         const openPdfAfterCompile = vscode.workspace
@@ -2782,7 +3063,7 @@ function activate(context) {
 
   const synctexForwardCommand = vscode.commands.registerCommand('contextIntellisense.synctexForward', async () => {
     const mode = getSyncTexMode();
-    if (mode !== 'rightclick') {
+    if (mode !== 'rightclick' && getSyncTexIntegrationMode() !== 'bridge') {
       return;
     }
     await forwardSyncTex(vscode.window.activeTextEditor, {
@@ -2849,23 +3130,56 @@ function activate(context) {
 
   }));
 
+  const triggerArgumentContextCommand = vscode.commands.registerCommand(
+    'contextIntellisense.triggerArgumentContext',
+    () => triggerArgumentInformation(vscode.window.activeTextEditor)
+  );
+  context.subscriptions.push(triggerArgumentContextCommand);
+
+  const nextSnippetArgumentCommand = vscode.commands.registerCommand(
+    'contextIntellisense.nextSnippetArgument',
+    async () => {
+      const editor = vscode.window.activeTextEditor;
+      if (!editor) {
+        return;
+      }
+      await vscode.commands.executeCommand('jumpToNextSnippetPlaceholder');
+      triggerArgumentInformation(editor, true);
+    }
+  );
+  context.subscriptions.push(nextSnippetArgumentCommand);
+
   const selector = { language: 'context.tex', scheme: 'file' };
   const provider = vscode.languages.registerCompletionItemProvider(
     selector,
     {
-      provideCompletionItems(document, position) {
+      async provideCompletionItems(document, position) {
         if (cache.commandCompletions.length === 0) {
           return [];
         }
 
         const line = document.lineAt(position.line).text;
         const linePrefix = line.slice(0, position.character);
+        const lineSuffix = line.slice(position.character);
 
-        const bracketContext = getBracketInvocationContext(linePrefix);
+        const bracketContext = getDocumentBracketContext(document, position);
         if (bracketContext) {
+          const workspaceItems = isWorkspaceArgument(
+            bracketContext.commandName,
+            bracketContext.argumentIndex,
+            bracketContext
+          )
+            ? await createWorkspaceArgumentItems(bracketContext.commandName)
+            : null;
+          if (workspaceItems) {
+            const segmentMatch = bracketContext.currentSegment.match(/(?:^|,)\s*([^,\]]*)$/);
+            const segment = (segmentMatch ? segmentMatch[1] : bracketContext.currentSegment).trim().toLowerCase();
+            return workspaceItems.filter(item => !segment || item.label.toLowerCase().startsWith(segment));
+          }
           const segmentMatch = bracketContext.currentSegment.match(/(?:^|,)\s*([^,\]]*)$/);
           const currentSegment = segmentMatch ? segmentMatch[1] : '';
-          return createKeywordAndParameterItems(bracketContext.commandName, currentSegment, bracketContext.argumentIndex);
+          const items = createKeywordAndParameterItems(bracketContext.commandName, currentSegment, bracketContext.argumentIndex);
+          return items;
         }
 
         const commandMatch = linePrefix.match(/\\([A-Za-z@]*)$/);
@@ -2885,6 +3199,19 @@ function activate(context) {
 
   context.subscriptions.push(provider);
 
+  context.subscriptions.push(vscode.window.onDidChangeTextEditorSelection(event => {
+    scheduleArgumentInformation(
+      event.textEditor,
+      event.kind === vscode.TextEditorSelectionChangeKind.Keyboard
+    );
+  }));
+  context.subscriptions.push(vscode.workspace.onDidChangeTextDocument(event => {
+    const editor = vscode.window.activeTextEditor;
+    if (editor && editor.document === event.document) {
+      scheduleArgumentInformation(editor);
+    }
+  }));
+
   const signatureProvider = vscode.languages.registerSignatureHelpProvider(
     selector,
     {
@@ -2903,7 +3230,8 @@ function activate(context) {
         }
 
         const activeParameterIndex = Math.min(getActiveParameterIndex(commandName, linePrefix), Math.max(specs.length - 1, 0));
-        const bracketContext = getBracketInvocationContext(linePrefix);
+        const lineSuffix = line.slice(position.character);
+        const bracketContext = getDocumentBracketContext(document, position);
         const activeAssignmentKey = bracketContext && bracketContext.commandName === commandName
           ? getActiveAssignmentKey(bracketContext.currentSegment)
           : '';

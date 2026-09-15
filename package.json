@@ -3,7 +3,7 @@
   "displayName": "ConTeXt IntelliSense",
   "description": "ConTeXt syntax highlighting plus context-aware completions with command signatures and key-value hints.",
   "icon": "icon.png",
-  "version": "1.1.7",
+  "version": "1.1.14",
   "publisher": "wdev",
   "repository": {
     "type": "git",
@@ -62,6 +62,13 @@
         "command": "contextIntellisense.clearWorkspace",
         "title": "Clear Workspace",
         "icon": "$(trash)"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "contextIntellisense.nextSnippetArgument",
+        "key": "tab",
+        "when": "editorTextFocus && editorLangId == context.tex && inSnippetMode"
       }
     ],
     "menus": {
@@ -311,6 +318,12 @@
         "path": "./syntaxes/context-syntax-json.json"
       }
     ],
+    "configurationDefaults": {
+      "context.tex": {
+        "editor.wordBasedSuggestions": "off",
+        "editor.suggest.showWords": false
+      }
+    },
     "configuration": {
       "title": "ConTeXt IntelliSense",
       "properties": {
@@ -324,12 +337,12 @@
           "type": "string",
           "default": "",
           "scope": "resource",
-          "description": "Absolute path to the project main .tex file that should be compiled from the main-file command."
+          "description": "Workspace-relative .tex file that should be compiled from the 'Compile Main' command."
         },
         "contextIntellisense.openPdfAfterCompile": {
           "type": "boolean",
           "default": true,
-          "description": "Open the generated PDF automatically after a successful compile. Uses Academic PDF Viewer (ovolab-veritas.academic-pdf-viewer) when installed."
+          "description": "Open the generated PDF automatically after a successful compile. Uses Academic PDF Viewer (ovolab-veritas.academic-pdf-viewer) when installed, then your default vs code pdf viewer, then your system's default pdf viewer."
         },
         "contextIntellisense.synctex": {
           "type": "string",
@@ -345,7 +358,21 @@
           ],
           "default": "doubleclick",
           "scope": "window",
-          "description": "Selects how SyncTeX forward search is triggered from a ConTeXt editor. Inverse search from the PDF viewer remains available in every mode."
+          "description": "Selects how SyncTeX forward search is triggered from a ConTeXt editor."
+        },
+        "contextIntellisense.synctexmode": {
+          "type": "string",
+          "enum": [
+            "bridge",
+            "API"
+          ],
+          "enumDescriptions": [
+            "Use the Academic PDF Viewer's built-in SyncTeX bridge.",
+            "Use the public Academic PDF Viewer API and ConTeXt IntelliSense SyncTeX integration."
+          ],
+          "default": "API",
+          "scope": "window",
+          "description": "Selects how ConTeXt IntelliSense integrates with Academic PDF Viewer."
         }
       }
     }
