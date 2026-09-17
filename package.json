@@ -3,7 +3,7 @@
   "displayName": "ConTeXt IntelliSense",
   "description": "ConTeXt syntax highlighting plus context-aware completions with command signatures and key-value hints.",
   "icon": "icon.png",
-  "version": "1.1.5",
+  "version": "1.1.53",
   "publisher": "wdev",
   "repository": {
     "type": "git",
@@ -12,7 +12,8 @@
   "scripts": {
     "build-vsix": "node ./build-vsix.js",
     "install-vsix": "node ./install-vsix.js",
-    "install-vsix:insiders": "node ./install-vsix.js --insiders"
+    "install-vsix:insiders": "node ./install-vsix.js --insiders",
+    "generate-math-grammar": "node ./scripts/generate-math-grammar.js"
   },
   "engines": {
     "vscode": "^1.80.0"

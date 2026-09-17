@@ -9,6 +9,7 @@ let cache = {
   commandMap: new Map(),
   commandCompletions: [],
   commandArgumentSpecs: new Map(),
+  commandArgumentSpecVariants: new Map(),
   parameterValueDefaults: new Map()
 };
 
@@ -188,13 +189,7 @@ function buildSignatureParts(commandName, argumentSpecs, options = {}) {
 
     if (spec.kind === 'assignments') {
       const parameterRows = [];
-      if (spec.allowsArbitraryKeys) {
-        parameterRows.push(['KEY', 'VALUE']);
-      }
-
-      const parameterNames = spec.allowsArbitraryKeys
-        ? []
-        : getArgumentParameterNames(spec, entry);
+      const parameterNames = getArgumentParameterNames(spec, entry);
       for (const parameterName of parameterNames) {
         if (activeAssignmentKey && specIndex === activeParameterIndex && parameterName !== activeAssignmentKey) {
           continue;
@@ -212,6 +207,9 @@ function buildSignatureParts(commandName, argumentSpecs, options = {}) {
           : chunkValuesForDisplay(parameterTypes);
 
         parameterRows.push([parameterName, renderedValues || '']);
+      }
+      if (spec.allowsArbitraryKeys) {
+        parameterRows.push(['KEY', 'VALUE']);
       }
 
       const table = buildHtmlKeyValueTable(['Key', 'Values'], parameterRows);
@@ -528,15 +526,46 @@ function parseCommandMap(xmlText) {
     return new vscode.SnippetString(`${startName}${argumentSnippet.text}\n\t$0\n\\${stopName}`);
   }
 
-  /** Returns valid forms created by omitting leading optional arguments. */
+  /** Returns valid positional forms for the command's optional arguments. */
   function getArgumentSpecVariants(argumentSpecs) {
-    let firstRequired = 0;
-    while (firstRequired < argumentSpecs.length && argumentSpecs[firstRequired].optional) {
-      firstRequired += 1;
+    if (argumentSpecs.length === 0) {
+      return [[]];
     }
-    return Array.from({ length: firstRequired + 1 }, (_, index) =>
-      argumentSpecs.slice(firstRequired - index)
-    );
+
+    const variants = [];
+    const collect = (index, selected) => {
+      if (index >= argumentSpecs.length) {
+        if (selected.length > 0) {
+          variants.push(selected);
+        }
+        return;
+      }
+
+      const spec = argumentSpecs[index];
+      if (spec.optional) {
+        collect(index + 1, [...selected, spec]);
+        collect(index + 1, selected);
+      } else {
+        collect(index + 1, [...selected, spec]);
+      }
+    };
+    collect(0, []);
+
+    const validVariants = variants.filter(variant => {
+      const last = variant[variant.length - 1];
+      const lastIndex = argumentSpecs.indexOf(last);
+      const hasSkippedAssignment = argumentSpecs
+        .slice(lastIndex + 1)
+        .some(spec => spec.optional && spec.kind === 'assignments');
+      return !(last.optional && last.kind === 'keywords' && hasSkippedAssignment);
+    });
+
+    return [...new Map(validVariants.map(variant => {
+      const shape = variant
+        .map(spec => `${spec.kind}:${spec.delimiter}:${spec.list ? 'list' : 'single'}`)
+        .join('|');
+      return [shape, variant];
+    })).values()];
   }
 
   const commandRe = /<cd:command\b[^>]*\/>|<cd:command\b[^>]*>[\s\S]*?<\/cd:command>/g;
@@ -844,6 +873,11 @@ function parseCommandMap(xmlText) {
   }
 
   const commandCompletions = [];
+  const labelsWithArguments = new Set(
+    [...completionCandidates.entries()]
+      .filter(([, candidates]) => candidates.some(candidate => candidate.meta.argumentSpecs?.length > 0))
+      .map(([label]) => label)
+  );
   for (const [label, candidates] of completionCandidates.entries()) {
     if (!candidates || candidates.length === 0) {
       continue;
@@ -854,6 +888,9 @@ function parseCommandMap(xmlText) {
         ? getArgumentSpecVariants(candidate.meta.argumentSpecs)
         : [null];
       for (const argumentSpecs of argumentVariants) {
+        if (argumentSpecs.length === 0 && candidate.meta.argumentSpecs.length > 0) {
+          continue;
+        }
         const meta = argumentSpecs
           ? { ...candidate.meta, argumentSpecs }
           : candidate.meta;
@@ -885,10 +922,16 @@ function parseCommandMap(xmlText) {
   }
 
   const commandArgumentSpecs = new Map();
+  const commandArgumentSpecVariants = new Map();
   for (const [commandName, candidates] of commandArgumentSpecCandidates.entries()) {
     if (!candidates || candidates.length === 0) {
       continue;
     }
+
+    const variants = [...new Map(candidates
+      .flatMap(candidate => getArgumentSpecVariants(candidate.argumentSpecs || []))
+      .map(argumentSpecs => [JSON.stringify(argumentSpecs), argumentSpecs])).values()];
+    commandArgumentSpecVariants.set(commandName, variants);
 
     let best = candidates[0];
     for (let i = 1; i < candidates.length; i++) {
@@ -916,8 +959,11 @@ function parseCommandMap(xmlText) {
 
   return {
     commandMap,
-    commandCompletions,
-    commandArgumentSpecs
+    commandCompletions: commandCompletions.filter(completion =>
+      completion.argumentSpecs.length > 0 || !labelsWithArguments.has(completion.label)
+    ),
+    commandArgumentSpecs,
+    commandArgumentSpecVariants
   };
 }
 
@@ -1025,6 +1071,50 @@ function loadFontCompletions(xmlPath) {
   return completions;
 }
 
+/** Loads an interface tree while preserving commented definitions. */
+function loadInterfaceXml(xmlPath, visited = new Set()) {
+  const absolutePath = path.resolve(xmlPath);
+  if (visited.has(absolutePath) || !fs.existsSync(absolutePath)) {
+    return '';
+  }
+
+  visited.add(absolutePath);
+  const text = fs.readFileSync(absolutePath, 'utf8');
+  const directory = path.dirname(absolutePath);
+  const references = [...text.matchAll(/<cd:interfacefile\b[^>]*\bfilename="([^"]+)"[^>]*\/?>/g)];
+  return text + references
+    .map(([, filename]) => loadInterfaceXml(path.join(directory, filename), visited))
+    .join('\n');
+}
+
+/** Expands interface definitions referenced by i-context.xml. */
+function expandInterfaceDefinitions(xmlText) {
+  const definitions = new Map();
+  const defineRe = /<cd:define\b([^>]*)>([\s\S]*?)<\/cd:define>/g;
+  let match;
+  while ((match = defineRe.exec(xmlText)) !== null) {
+    const name = parseAttributes(match[1]).name;
+    if (name) {
+      definitions.set(name, match[2]);
+    }
+  }
+
+  function expand(fragment, stack = new Set()) {
+    return fragment.replace(/<cd:resolve\b([^>]*?)\s*\/?>/g, (reference, attributes) => {
+      const name = parseAttributes(attributes).name;
+      const definition = definitions.get(name);
+      if (!definition || stack.has(name)) {
+        return reference;
+      }
+      const nextStack = new Set(stack);
+      nextStack.add(name);
+      return expand(definition, nextStack);
+    });
+  }
+
+  return expand(xmlText);
+}
+
 function getCommandEntry(commandName) {
   if (cache.commandMap.has(commandName)) {
     return cache.commandMap.get(commandName);
@@ -1054,7 +1144,7 @@ function loadData(configuredTexRootPath, configuredXmlPath) {
   const texRootPath = resolveTexRootPath(configuredTexRootPath, configuredXmlPath);
   const xmlPath = resolveXmlPathFromTexRoot(texRootPath) || resolveXmlPath(configuredXmlPath);
   if (!xmlPath) {
-    cache = { xmlPath: '', commandMap: new Map(), commandCompletions: [], commandArgumentSpecs: new Map(), parameterValueDefaults: new Map() };
+    cache = { xmlPath: '', commandMap: new Map(), commandCompletions: [], commandArgumentSpecs: new Map(), commandArgumentSpecVariants: new Map(), parameterValueDefaults: new Map() };
     return;
   }
 
@@ -1064,10 +1154,10 @@ function loadData(configuredTexRootPath, configuredXmlPath) {
 
   let xmlText = '';
   try {
-    xmlText = fs.readFileSync(xmlPath, 'utf8');
+    xmlText = expandInterfaceDefinitions(loadInterfaceXml(xmlPath));
   } catch (err) {
-    vscode.window.showWarningMessage(`ConTeXt IntelliSense: Could not read XML file: ${xmlPath}. Set contextIntellisense.texRootPath in settings.`);
-    cache = { xmlPath, commandMap: new Map(), commandCompletions: [], commandArgumentSpecs: new Map(), parameterValueDefaults: new Map() };
+      vscode.window.showWarningMessage(`ConTeXt IntelliSense: Could not read i-context.xml below ${xmlPath}. Set contextIntellisense.texRootPath in settings.`);
+    cache = { xmlPath, commandMap: new Map(), commandCompletions: [], commandArgumentSpecs: new Map(), commandArgumentSpecVariants: new Map(), parameterValueDefaults: new Map() };
     return;
   }
 
@@ -1078,6 +1168,7 @@ function loadData(configuredTexRootPath, configuredXmlPath) {
     commandMap: parsed.commandMap,
     commandCompletions: parsed.commandCompletions.concat(fontCompletions),
     commandArgumentSpecs: parsed.commandArgumentSpecs,
+    commandArgumentSpecVariants: parsed.commandArgumentSpecVariants,
     parameterValueDefaults: new Map(Array.from(parsed.commandMap.entries()).map(([name, entry]) => [name, entry.parameterValueDefaults || new Map()]))
   };
 }
@@ -1113,7 +1204,7 @@ function countBracketArguments(text) {
 
 /** Returns the square-bracket argument under the cursor. */
 function getBracketInvocationContext(linePrefix, lineSuffix = '') {
-  const m = linePrefix.match(/\\([A-Za-z@]+)((?:\s*\[[^\]]*\])*)(\s*\[[^\]]*)$/);
+  const m = linePrefix.match(/\\([A-Za-z@:_!?]+)((?:\s*\[[^\]]*\])*)(\s*\[[^\]]*)$/);
   if (!m) {
     return null;
   }
@@ -1122,6 +1213,7 @@ function getBracketInvocationContext(linePrefix, lineSuffix = '') {
   const completedBrackets = m[2] || '';
   const openBracketPart = m[3] || '';
   const currentSegment = openBracketPart.replace(/^\s*\[/, '');
+  const remainingSegment = (lineSuffix.match(/^[^\]]*/) || [''])[0];
   const completedCount = (completedBrackets.match(/\[/g) || []).length;
   const commandToken = `\\${commandName}`;
   const commandIndex = linePrefix.lastIndexOf(commandToken);
@@ -1131,7 +1223,8 @@ function getBracketInvocationContext(linePrefix, lineSuffix = '') {
     commandName,
     argumentIndex: completedCount,
     bracketCount: Math.max(completedCount + 1, countBracketArguments(argumentText)),
-    currentSegment
+    currentSegment,
+    remainingSegment
   };
 }
 
@@ -1148,10 +1241,19 @@ function getEditorBracketContext(editor) {
   return getDocumentBracketContext(editor.document, editor.selection.active);
 }
 
+/** Returns the text of the current comma-separated argument segment. */
+function getCurrentArgumentSegment(context) {
+  const match = (context && context.currentSegment || '').match(/(?:^|,)\s*([^,\]]*)$/);
+  return match ? match[1] : '';
+}
+
 /** Returns an empty argument at a document position. */
 function getEmptyArgumentContext(document, position) {
   const context = getDocumentBracketContext(document, position);
-  return context && !context.currentSegment.trim() && getCommandEntry(context.commandName)
+  return context
+    && !getCurrentArgumentSegment(context).trim()
+    && !context.remainingSegment.trim()
+    && getCommandEntry(context.commandName)
     ? context
     : null;
 }
@@ -1166,7 +1268,7 @@ function triggerEmptyArgumentSuggestions(editor, refresh = false) {
   const key = context
     ? `${editor.document.uri.toString()}:${editor.selection.active.line}:${editor.selection.active.character}`
     : '';
-  if (!context || triggerEmptyArgumentSuggestions.lastPosition === key) {
+  if (!context || (!refresh && triggerEmptyArgumentSuggestions.lastPosition === key)) {
     if (!context) {
       triggerEmptyArgumentSuggestions.lastPosition = '';
     }
@@ -1184,14 +1286,20 @@ function triggerEmptyArgumentSuggestions(editor, refresh = false) {
 }
 
 /** Shows argument information whenever the cursor is inside an argument. */
-function triggerArgumentInformation(editor, refresh = false) {
+function triggerArgumentInformation(editor, refresh = false, leftArgument = false) {
   if (!editor || editor.document.languageId !== 'context.tex') {
     return;
   }
 
   const context = getEditorBracketContext(editor);
   if (!context) {
+    const line = editor.document.lineAt(editor.selection.active.line).text;
+    const prefix = line.slice(0, editor.selection.active.character);
+    if (!leftArgument && /\\[A-Za-z@:_!?]*$/.test(prefix)) {
+      return;
+    }
     void vscode.commands.executeCommand('hideSuggestWidget');
+    void vscode.commands.executeCommand('closeParameterHints');
     return;
   }
 
@@ -1200,12 +1308,32 @@ function triggerArgumentInformation(editor, refresh = false) {
 }
 
 /** Evaluates argument context after VS Code has applied the new selection. */
-function scheduleArgumentInformation(editor, refresh = false) {
-  setTimeout(() => triggerArgumentInformation(editor, refresh), 0);
+function scheduleArgumentInformation(editor, refresh = false, selectionChange = false) {
+  const key = editor ? editor.document.uri.toString() : '';
+  const hasArgument = !!(editor && getEditorBracketContext(editor));
+  const leftArgument = selectionChange
+    && scheduleArgumentInformation.lastArgumentState.get(key) === true
+    && !hasArgument;
+  scheduleArgumentInformation.lastArgumentState.set(key, hasArgument);
+  setTimeout(() => triggerArgumentInformation(editor, refresh, leftArgument), 0);
 }
 
-function getCommandArgumentSpec(commandName, argumentIndex) {
-  const specs = cache.commandArgumentSpecs.get(commandName);
+scheduleArgumentInformation.lastArgumentState = new Map();
+
+function takeBracketArguments(specs, count) {
+  let seen = 0;
+  const result = [];
+  for (const spec of specs || []) {
+    result.push(spec);
+    if (spec.delimiter === 'bracket' && ++seen >= count) {
+      break;
+    }
+  }
+  return result;
+}
+
+function getCommandArgumentSpec(commandName, argumentIndex, bracketCount = argumentIndex + 1) {
+  const specs = getCommandSignatureSpecs(commandName, bracketCount);
   if (!specs) {
     return null;
   }
@@ -1217,15 +1345,99 @@ function getCommandArgumentSpec(commandName, argumentIndex) {
   return bracketSpecs[argumentIndex];
 }
 
-function getCommandSignatureSpecs(commandName) {
+/** Returns whether a signature still requires an argument after its brackets. */
+function hasRequiredArgumentAfterBrackets(specs, bracketCount) {
+  let seenBrackets = 0;
+  for (const spec of specs || []) {
+    if (spec.delimiter === 'bracket' && ++seenBrackets >= bracketCount) {
+      return (specs || []).some((candidate, index) => index > specs.indexOf(spec) && !candidate.optional);
+    }
+  }
+  return false;
+}
+
+/** Returns whether all entered bracket arguments are required by the XML. */
+function hasRequiredBracketArguments(specs, bracketCount) {
+  return (specs || [])
+    .filter(spec => spec.delimiter === 'bracket')
+    .slice(0, bracketCount)
+    .every(spec => !spec.optional);
+}
+
+/** Returns the kind of the first bracket argument in a signature. */
+function getFirstBracketKind(specs) {
+  const first = (specs || []).find(spec => spec.delimiter === 'bracket');
+  return first ? first.kind : '';
+}
+
+/** Merges metadata from equivalent XML argument definitions. */
+function mergeArgumentSpec(left, right) {
+  const parameterTypes = left.parameterTypes && left.parameterTypes.size > 0
+    ? left.parameterTypes
+    : right.parameterTypes || new Map();
+  return {
+    ...left,
+    parameterNames: left.parameterNames && left.parameterNames.length > 0 ? left.parameterNames : right.parameterNames || [],
+    parameterSources: left.parameterSources && left.parameterSources.length > 0 ? left.parameterSources : right.parameterSources || [],
+    keywordValues: left.keywordValues && left.keywordValues.length > 0 ? left.keywordValues : right.keywordValues || [],
+    keywordTypes: left.keywordTypes && left.keywordTypes.length > 0 ? left.keywordTypes : right.keywordTypes || [],
+    parameterTypes,
+    allowsArbitraryKeys: left.allowsArbitraryKeys || right.allowsArbitraryKeys,
+    hasParameterTags: left.hasParameterTags || right.hasParameterTags
+  };
+}
+
+/** Merges complete argument variants with the same XML shape. */
+function mergeEquivalentArgumentVariants(variants) {
+  const merged = new Map();
+  for (const variant of variants) {
+    const shape = variant
+      .map(spec => `${spec.kind}:${spec.delimiter}:${spec.list ? 'list' : 'single'}`)
+      .join('|');
+    const existing = merged.get(shape);
+    if (!existing) {
+      merged.set(shape, variant.map(spec => ({ ...spec })));
+      continue;
+    }
+    for (let index = 0; index < existing.length; index++) {
+      existing[index] = mergeArgumentSpec(existing[index], variant[index]);
+    }
+  }
+  return [...merged.values()];
+}
+
+function getCommandSignatureSpecs(commandName, bracketCount = 0) {
+  if (bracketCount > 0) {
+    const variants = cache.commandArgumentSpecVariants.get(commandName) || [];
+    const matching = variants.filter(specs =>
+      specs.filter(spec => spec.delimiter === 'bracket').length === bracketCount
+    );
+    for (const specs of variants) {
+      if (specs.filter(spec => spec.delimiter === 'bracket').length > bracketCount) {
+        matching.push(takeBracketArguments(specs, bracketCount));
+      }
+    }
+    const mergedMatching = mergeEquivalentArgumentVariants(matching);
+    const complete = mergedMatching.filter(specs => !hasRequiredArgumentAfterBrackets(specs, bracketCount));
+    if (complete.length > 0) {
+      const firstKind = getFirstBracketKind(complete[0]);
+      const requiredDifferentKind = complete.find(specs =>
+        hasRequiredBracketArguments(specs, bracketCount)
+        && getFirstBracketKind(specs) !== firstKind
+      );
+      return requiredDifferentKind || complete[0];
+    }
+    if (mergedMatching.length > 0) {
+      return mergedMatching[0];
+    }
+  }
   return cache.commandArgumentSpecs.get(commandName) || [];
 }
 
 /** Returns direct and inherited keys available in an assignment argument. */
 function getArgumentParameterNames(argumentSpec, entry) {
   const names = [
-    ...(argumentSpec ? argumentSpec.parameterNames || [] : []),
-    ...Array.from(entry && entry.parameters ? entry.parameters : [])
+    ...(argumentSpec ? argumentSpec.parameterNames || [] : [])
   ];
 
   for (const sourceName of argumentSpec && argumentSpec.parameterSources || []) {
@@ -1386,6 +1598,23 @@ function getActiveAssignmentKey(currentSegment) {
   return segment.slice(0, eqIndex).trim();
 }
 
+/** Returns the stable order key for a command's argument form. */
+function getCommandVariantSortKey(argumentSpecs) {
+  const specs = (argumentSpecs || []).filter(spec => spec.kind !== 'content');
+  if (specs.length === 0) {
+    return '0_00';
+  }
+
+  const bracketCount = specs.filter(spec => spec.delimiter === 'bracket').length;
+  if (bracketCount > 0) {
+    return `1_${String(bracketCount).padStart(2, '0')}`;
+  }
+  if (specs.some(spec => spec.delimiter === 'brace')) {
+    return '2_00';
+  }
+  return '3_00';
+}
+
 function createCommandItems(prefixPart) {
   const lower = (prefixPart || '').toLowerCase();
   const items = [];
@@ -1400,7 +1629,7 @@ function createCommandItems(prefixPart) {
     const argumentSpecs = completion.argumentSpecs || getCommandSignatureSpecs(compareText);
     const item = new vscode.CompletionItem(makeArgumentPreview(compareText, argumentSpecs), completion.kind);
     item.insertText = completion.insertText;
-    item.sortText = `${completion.sortWeight}_${compareText}_${completion.variantIndex || 0}`;
+    item.sortText = `${completion.sortWeight}_${compareText}_${getCommandVariantSortKey(argumentSpecs)}_${completion.variantIndex || 0}`;
     item.filterText = label;
     const signatureParts = buildSignatureParts(compareText, argumentSpecs);
     item.detail = signatureParts.label || 'ConTeXt IntelliSense';
@@ -1417,13 +1646,13 @@ function createCommandItems(prefixPart) {
   return items;
 }
 
-function createKeywordAndParameterItems(commandName, currentSegment, argumentIndex = 0) {
+function createKeywordAndParameterItems(commandName, currentSegment, argumentIndex = 0, bracketCount = argumentIndex + 1) {
   const entry = getCommandEntry(commandName);
   if (!entry) {
     return [];
   }
 
-  const argumentSpec = getCommandArgumentSpec(commandName, argumentIndex);
+  const argumentSpec = getCommandArgumentSpec(commandName, argumentIndex, bracketCount);
   if (argumentSpec && argumentSpec.kind === 'keywords') {
     const segment = (currentSegment || '').trim();
     if (segment.startsWith('\\')) {
@@ -1456,21 +1685,18 @@ function createKeywordAndParameterItems(commandName, currentSegment, argumentInd
   function createAssignmentItems(filterSegment = '') {
     const out = [];
 
-    if (!(argumentSpec && argumentSpec.kind === 'assignments' && argumentSpec.allowsArbitraryKeys)) {
-      const parameterNames = getArgumentParameterNames(argumentSpec, entry);
-
-      for (const parameter of parameterNames) {
-        const label = `${parameter}=`;
-        const item = new vscode.CompletionItem(label, vscode.CompletionItemKind.Field);
-        item.insertText = new vscode.SnippetString(`${parameter}=$0`);
-        item.command = {
-          command: 'editor.action.triggerSuggest',
-          title: 'Trigger suggest for parameter values'
-        };
-        item.sortText = `1_${label}`;
-        item.filterText = label;
-        out.push(item);
-      }
+    const parameterNames = getArgumentParameterNames(argumentSpec, entry);
+    for (const parameter of parameterNames) {
+      const label = `${parameter}=`;
+      const item = new vscode.CompletionItem(label, vscode.CompletionItemKind.Field);
+      item.insertText = new vscode.SnippetString(`${parameter}=$0`);
+      item.command = {
+        command: 'editor.action.triggerSuggest',
+        title: 'Trigger suggest for parameter values'
+      };
+      item.sortText = `1_${label}`;
+      item.filterText = label;
+      out.push(item);
     }
 
     const normalizedFilter = (filterSegment || '').trim().toLowerCase();
@@ -1732,13 +1958,13 @@ function resolveXmlPathFromTexRoot(texRootPath) {
   ];
 
   for (const candidate of candidates) {
-    const resolved = searchForFile(candidate, ['context-en.xml'], 6);
+    const resolved = searchForFile(candidate, ['i-context.xml'], 6);
     if (resolved) {
       return resolved;
     }
   }
 
-  return searchForFile(root, ['context-en.xml'], 7);
+  return searchForFile(root, ['i-context.xml'], 7);
 }
 
 function resolveContextExecutableFromTexRoot(texRootPath) {
@@ -2133,7 +2359,11 @@ function activate(context) {
   const outputChannel = vscode.window.createOutputChannel('ConTeXt IntelliSense');
   const fileDecorationsEmitter = new vscode.EventEmitter();
   const codeLensesEmitter = new vscode.EventEmitter();
-  context.subscriptions.push(outputChannel, fileDecorationsEmitter, codeLensesEmitter);
+  const compileDiagnostics = vscode.languages.createDiagnosticCollection('context-intellisense');
+  const compileStatus = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
+  compileStatus.name = 'ConTeXt compilation';
+  compileStatus.hide();
+  context.subscriptions.push(outputChannel, fileDecorationsEmitter, codeLensesEmitter, compileDiagnostics, compileStatus);
 
   /** Writes a complete JSON diagnostic record for one SyncTeX operation. */
   function writeSyncTexTrace(direction, details) {
@@ -2723,7 +2953,7 @@ function activate(context) {
 
     const resolvedXmlPath = getResolvedXmlPath();
     if (!resolvedXmlPath) {
-      vscode.window.showWarningMessage(`ConTeXt IntelliSense configured with TeX root, but context-en.xml was not found below: ${texRootPath}`);
+      vscode.window.showWarningMessage(`ConTeXt IntelliSense configured with TeX root, but i-context.xml was not found below: ${texRootPath}`);
     } else {
       vscode.window.showInformationMessage(`ConTeXt IntelliSense configured with TeX root: ${texRootPath}`);
     }
@@ -2815,6 +3045,104 @@ function activate(context) {
     await configureTexRootPathWithPicker();
   }
 
+  /** Converts a ConTeXt error log into navigable VS Code diagnostics. */
+  function readCompileDiagnostics(errorLogPath, fallbackFilePath) {
+    if (!isExistingFile(errorLogPath)) {
+      return [];
+    }
+
+    const diagnostics = [];
+    const logText = fs.readFileSync(errorLogPath, 'utf8');
+    const structuredFile = logText.match(/\["filename"\]\s*=\s*"([^"]+)"/);
+    const structuredLine = logText.match(/\["linenumber"\]\s*=\s*(\d+)/);
+    const structuredError = logText.match(/\["lasttexerror"\]\s*=\s*"([^"]+)"/)
+      || logText.match(/\["lastluaerror"\]\s*=\s*"([^"]+)"/);
+    const structuredHelp = logText.match(/\["lasttexhelp"\]\s*=\s*"([^"]*)"/);
+    if (structuredError && structuredError[1]) {
+      const filePath = structuredFile ? structuredFile[1] : fallbackFilePath;
+      const lineNumber = structuredLine ? Number(structuredLine[1]) : 1;
+      const help = structuredHelp && structuredHelp[1] ? ` ${structuredHelp[1].replace(/\\n/g, ' ')}` : '';
+      const uri = vscode.Uri.file(resolveConfiguredPath(filePath, path.dirname(fallbackFilePath)));
+      const line = Math.max(lineNumber - 1, 0);
+      diagnostics.push({
+        uri,
+        diagnostic: new vscode.Diagnostic(
+          new vscode.Range(line, 0, line, 0),
+          `${structuredError[1].trim()}${help}`,
+          vscode.DiagnosticSeverity.Error
+        )
+      });
+      return diagnostics;
+    }
+
+    const lines = logText.split(/\r?\n/);
+    let message = '';
+    let lineNumber = 1;
+    let filePath = fallbackFilePath;
+    const addDiagnostic = () => {
+      if (!message) {
+        return;
+      }
+      const uri = vscode.Uri.file(resolveConfiguredPath(filePath, path.dirname(fallbackFilePath)));
+      const range = new vscode.Range(Math.max(lineNumber - 1, 0), 0, Math.max(lineNumber - 1, 0), 0);
+      diagnostics.push({ uri, diagnostic: new vscode.Diagnostic(range, message, vscode.DiagnosticSeverity.Error) });
+      message = '';
+    };
+
+    for (const line of lines) {
+      const error = line.match(/^!\s*(.+)$/);
+      if (error) {
+        addDiagnostic();
+        message = error[1].trim();
+      }
+      const source = line.match(/(?:file|source)\s*[:=]\s*(.+?\.(?:tex|mkiv|mkvi|mkxl|mklx))(?:\s|$)/i);
+      if (source) {
+        filePath = source[1].trim();
+      }
+      const location = line.match(/\b(?:l(?:ine)?\.?)[\s:]*(\d+)\b/i);
+      if (location) {
+        lineNumber = Number(location[1]);
+      }
+    }
+    addDiagnostic();
+    return diagnostics;
+  }
+
+  /** Publishes compiler diagnostics and returns a compact user-facing summary. */
+  function publishCompileDiagnostics(errorLogPath, targetFilePath, fallbackMessage) {
+    compileDiagnostics.clear();
+    const diagnostics = readCompileDiagnostics(errorLogPath, targetFilePath);
+    const grouped = new Map();
+    for (const item of diagnostics) {
+      if (!grouped.has(item.uri.toString())) {
+        grouped.set(item.uri.toString(), []);
+      }
+      grouped.get(item.uri.toString()).push(item.diagnostic);
+    }
+    for (const item of diagnostics) {
+      compileDiagnostics.set(item.uri, grouped.get(item.uri.toString()));
+    }
+    if (diagnostics.length === 0) {
+      return { summary: fallbackMessage, diagnostics };
+    }
+    const first = diagnostics[0];
+    const line = first.diagnostic.range.start.line + 1;
+    return {
+      summary: `${diagnostics.length} error${diagnostics.length === 1 ? '' : 's'} found: ${first.diagnostic.message} (${path.basename(first.uri.fsPath)}:${line})`,
+      diagnostics
+    };
+  }
+
+  /** Detects a ConTeXt error even when the process exits successfully. */
+  function hasCompileErrorLog(errorLogPath) {
+    if (!isExistingFile(errorLogPath)) {
+      return false;
+    }
+    const text = fs.readFileSync(errorLogPath, 'utf8');
+    return /\["last(?:tex|lua)error"\]\s*=\s*"[^"]+"/.test(text)
+      || /^!/m.test(text);
+  }
+
   async function compileTargetFile(targetFilePath, title) {
     const resolvedTargetPath = resolveConfiguredPath(targetFilePath, getWorkspaceRootPath());
     if (!isExistingFile(resolvedTargetPath)) {
@@ -2830,57 +3158,75 @@ function activate(context) {
 
     const cwd = path.dirname(resolvedTargetPath);
     const pdfPath = path.join(cwd, `${path.basename(resolvedTargetPath, path.extname(resolvedTargetPath))}.pdf`);
+    const errorLogPath = path.join(cwd, `${path.basename(resolvedTargetPath, path.extname(resolvedTargetPath))}-error.log`);
 
+    compileDiagnostics.delete(vscode.Uri.file(resolvedTargetPath));
+    compileStatus.text = '$(sync~spin) ConTeXt: compiling';
+    compileStatus.tooltip = `Compiling ${path.basename(resolvedTargetPath)}`;
+    compileStatus.show();
     outputChannel.clear();
     outputChannel.appendLine(`ConTeXt IntelliSense: ${title}`);
     outputChannel.appendLine(`Working directory: ${cwd}`);
     const compileArgs = ['--synctex', resolvedTargetPath];
     outputChannel.appendLine(`Command: ${contextExecutable} ${compileArgs.join(' ')}`);
-    outputChannel.show(true);
+    let compilationFailure = null;
+    try {
+      await vscode.window.withProgress({
+        location: vscode.ProgressLocation.Window,
+        title,
+        cancellable: false
+      }, async () => {
+        const result = await runProcess(contextExecutable, compileArgs, cwd, outputChannel);
+        const logHasError = hasCompileErrorLog(errorLogPath);
+        if (result.error || result.code !== 0 || logHasError) {
+          const reason = result.error
+            ? result.error.message || String(result.error)
+            : result.code !== 0
+              ? `exit code ${result.code}`
+              : 'the ConTeXt error log reports an error';
+          outputChannel.appendLine(`Compilation failed: ${reason}`);
+          compilationFailure = publishCompileDiagnostics(errorLogPath, resolvedTargetPath, reason);
+          return;
+        }
 
-    await vscode.window.withProgress({
-      location: vscode.ProgressLocation.Notification,
-      title,
-      cancellable: false
-    }, async () => {
-      const result = await runProcess(contextExecutable, compileArgs, cwd, outputChannel);
-      if (result.error) {
-        outputChannel.appendLine(String(result.error.message || result.error));
-        vscode.window.showErrorMessage(`ConTeXt compilation failed: ${result.error.message || result.error}`);
-        return;
-      }
-
-      if (result.code !== 0) {
-        vscode.window.showErrorMessage(`ConTeXt compilation failed with exit code ${result.code}. See the ConTeXt output channel.`);
-        return;
-      }
-
-      outputChannel.appendLine('Compilation completed successfully.');
-      if (getSyncTexIntegrationMode() === 'bridge') {
-        try {
-          const compressed = await ensureGzippedSyncTexSidecar(pdfPath);
-          if (compressed) {
-            await configureAcademicPdfViewerBridge(pdfPath);
-            outputChannel.appendLine(`SyncTeX bridge configured for: ${pdfPath}`);
-          } else {
-            outputChannel.appendLine(`SyncTeX bridge sidecar not found: ${pdfPath}`);
+        compileDiagnostics.clear();
+        outputChannel.appendLine('Compilation completed successfully.');
+        vscode.window.setStatusBarMessage(
+          `$(check) ConTeXt compilation succeeded: ${path.basename(resolvedTargetPath)}`,
+          4000
+        );
+        if (getSyncTexIntegrationMode() === 'bridge') {
+          try {
+            const compressed = await ensureGzippedSyncTexSidecar(pdfPath);
+            if (compressed) {
+              await configureAcademicPdfViewerBridge(pdfPath);
+              outputChannel.appendLine(`SyncTeX bridge configured for: ${pdfPath}`);
+            } else {
+              outputChannel.appendLine(`SyncTeX bridge sidecar not found: ${pdfPath}`);
+            }
+          } catch (error) {
+            outputChannel.appendLine(`SyncTeX bridge setup failed: ${error.message || error}`);
           }
-        } catch (error) {
-          outputChannel.appendLine(`SyncTeX bridge setup failed: ${error.message || error}`);
         }
-      }
-      if (isExistingFile(pdfPath)) {
-        await reloadActiveAcademicPdf();
-        const openPdfAfterCompile = vscode.workspace
-          .getConfiguration('contextIntellisense')
-          .get('openPdfAfterCompile', true);
-        if (openPdfAfterCompile) {
-          await openPdfFile(pdfPath);
+        if (isExistingFile(pdfPath)) {
+          await reloadActiveAcademicPdf();
+          const openPdfAfterCompile = vscode.workspace
+            .getConfiguration('contextIntellisense')
+            .get('openPdfAfterCompile', true);
+          if (openPdfAfterCompile) {
+            await openPdfFile(pdfPath);
+          }
+        } else {
+          vscode.window.showWarningMessage(`ConTeXt compilation succeeded, but no PDF was found at: ${pdfPath}`);
         }
-      } else {
-        vscode.window.showWarningMessage(`ConTeXt compilation succeeded, but no PDF was found at: ${pdfPath}`);
-      }
-    });
+      });
+    } finally {
+      compileStatus.hide();
+    }
+
+    if (compilationFailure) {
+      await vscode.commands.executeCommand('workbench.actions.view.problems');
+    }
 
     return true;
   }
@@ -2991,7 +3337,6 @@ function activate(context) {
       for (const failure of failures) {
         outputChannel.appendLine(`${failure.filePath}: ${failure.error.message || failure.error}`);
       }
-      outputChannel.show(true);
       vscode.window.showWarningMessage(`ConTeXt IntelliSense: deleted ${deletedCount} files; ${failures.length} failed. See the output channel.`);
       return false;
     }
@@ -3172,13 +3517,16 @@ function activate(context) {
             ? await createWorkspaceArgumentItems(bracketContext.commandName)
             : null;
           if (workspaceItems) {
-            const segmentMatch = bracketContext.currentSegment.match(/(?:^|,)\s*([^,\]]*)$/);
-            const segment = (segmentMatch ? segmentMatch[1] : bracketContext.currentSegment).trim().toLowerCase();
+            const segment = getCurrentArgumentSegment(bracketContext).trim().toLowerCase();
             return workspaceItems.filter(item => !segment || item.label.toLowerCase().startsWith(segment));
           }
-          const segmentMatch = bracketContext.currentSegment.match(/(?:^|,)\s*([^,\]]*)$/);
-          const currentSegment = segmentMatch ? segmentMatch[1] : '';
-          const items = createKeywordAndParameterItems(bracketContext.commandName, currentSegment, bracketContext.argumentIndex);
+          const currentSegment = getCurrentArgumentSegment(bracketContext);
+          const items = createKeywordAndParameterItems(
+            bracketContext.commandName,
+            currentSegment,
+            bracketContext.argumentIndex,
+            bracketContext.bracketCount
+          );
           return items;
         }
 
@@ -3203,6 +3551,8 @@ function activate(context) {
     scheduleArgumentInformation(
       event.textEditor,
       event.kind === vscode.TextEditorSelectionChangeKind.Keyboard
+        || event.kind === vscode.TextEditorSelectionChangeKind.Mouse,
+      true
     );
   }));
   context.subscriptions.push(vscode.workspace.onDidChangeTextDocument(event => {
@@ -3218,20 +3568,19 @@ function activate(context) {
       provideSignatureHelp(document, position) {
         const line = document.lineAt(position.line).text;
         const linePrefix = line.slice(0, position.character);
-        const commandMatch = /\\([A-Za-z@]+)(?:[^\\]*)$/.exec(linePrefix);
-        if (!commandMatch) {
+        const bracketContext = getDocumentBracketContext(document, position);
+        if (!bracketContext) {
           return null;
         }
 
-        const commandName = commandMatch[1];
-        const specs = getCommandSignatureSpecs(commandName).filter(spec => spec.kind !== 'content');
+        const commandName = bracketContext.commandName;
+        const specs = getCommandSignatureSpecs(commandName, bracketContext.bracketCount)
+          .filter(spec => spec.kind !== 'content');
         if (specs.length === 0) {
           return null;
         }
 
         const activeParameterIndex = Math.min(getActiveParameterIndex(commandName, linePrefix), Math.max(specs.length - 1, 0));
-        const lineSuffix = line.slice(position.character);
-        const bracketContext = getDocumentBracketContext(document, position);
         const activeAssignmentKey = bracketContext && bracketContext.commandName === commandName
           ? getActiveAssignmentKey(bracketContext.currentSegment)
           : '';
