@@ -28,10 +28,11 @@ You can re-open this setup anytime from the command palette with:
 
 Set the following option in VS Code settings:
 
-*   `contextIntellisense.texRootPath`: Absolute path to the root of your ConTeXt / TeX installation. The extension finds `context-en.xml` and the ConTeXt compiler automatically below this folder.
-*   `contextIntellisense.mainFilePath`: Absolute path to the main `.tex` file to compile from the main-file command.
+*   `contextIntellisense.texRootPath`: Absolute path to the root of your ConTeXt / TeX installation. The extension resolves `i-context.xml` and the ConTeXt compiler automatically below this folder.
+*   `contextIntellisense.mainFilePath`: Workspace-relative path to the main `.tex` file to compile from the main-file command.
 *   `contextIntellisense.openPdfAfterCompile`: Opens the generated PDF automatically after a successful compile (default: `true`).
-*   `contextIntellisense.synctexmode`: Selects `API` (default) for the ConTeXt IntelliSense integration or `bridge` for the Academic PDF Viewer's built-in SyncTeX bridge.
+*   `contextIntellisense.synctex`: Selects `off`, `doubleclick` (default), or `rightclick` for editor-side SyncTeX forward search.
+*   `contextIntellisense.synctexmode`: Selects `API` (default) for the ConTeXt IntelliSense integration or `bridge` for the Academic PDF Viewer's built-in SyncTeX bridge (which is currently not supported as it only works with LaTeX).
 
 The optional PDF integration targets [Academic PDF Viewer](https://marketplace.visualstudio.com/items?itemName=ovolab-veritas.academic-pdf-viewer) (`ovolab-veritas.academic-pdf-viewer`). If it is installed, the extension opens and refreshes its custom editor. The extension does not declare it as a mandatory dependency; without it, PDFs are opened with the operating system's default application.
 
@@ -42,12 +43,11 @@ Example (JSON settings):
 ```
 {
   "contextIntellisense.texRootPath": "C:/path/to/texroot",
-  "contextIntellisense.mainFilePath": "C:/path/to/prd_thesis.tex",
+  "contextIntellisense.mainFilePath": "prd_thesis.tex",
+  "contextIntellisense.synctex": "doubleclick",
   "contextIntellisense.synctexmode": "API"
 }
 ```
-
-In `bridge` mode, ConTeXt IntelliSense compresses the generated `.synctex` file to `.synctex.gz` and configures the Academic PDF Viewer for the generated PDF. In `API` mode, ConTeXt IntelliSense runs the ConTeXt/SyncTeX commands itself and sends positions through the viewer API.
 
 The editor provides two run actions for ConTeXt `.tex` files:
 
@@ -101,4 +101,4 @@ It performs:
 ## Requirements
 
 *   VS Code 1.80+
-*   Node.js 20+ recommended
+*   Node.js 24+ for local builds and releases

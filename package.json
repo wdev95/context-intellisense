@@ -3,7 +3,7 @@
   "displayName": "ConTeXt IntelliSense",
   "description": "ConTeXt syntax highlighting plus context-aware completions with command signatures and key-value hints.",
   "icon": "icon.png",
-  "version": "1.1.6",
+  "version": "1.1.133",
   "publisher": "wdev",
   "repository": {
     "type": "git",
@@ -12,8 +12,7 @@
   "scripts": {
     "build-vsix": "node ./build-vsix.js",
     "install-vsix": "node ./install-vsix.js",
-    "install-vsix:insiders": "node ./install-vsix.js --insiders",
-    "generate-math-grammar": "node ./scripts/generate-math-grammar.js"
+    "install-vsix:insiders": "node ./install-vsix.js --insiders"
   },
   "engines": {
     "vscode": "^1.80.0"
@@ -89,12 +88,12 @@
         {
           "command": "contextIntellisense.compileMainFile",
           "group": "navigation@11",
-          "when": "resourceScheme == file && resourceLangId == context.tex"
+          "when": "resourceScheme == file && resourceLangId == context.tex && contextIntellisense.hasMainFile"
         },
         {
           "command": "contextIntellisense.showPdfForCurrentFile",
           "group": "navigation@12",
-          "when": "resourceScheme == file && resourceLangId == context.tex"
+          "when": "resourceScheme == file && resourceLangId == context.tex && contextIntellisense.hasPdfForActiveFile"
         },
         {
           "command": "contextIntellisense.clearWorkspace",
@@ -120,11 +119,20 @@
           ".mkil",
           ".mkiv",
           ".mkix",
-          ".mklx",
           ".mkvi",
           ".mkxi",
-          ".mkxl",
           ".tex"
+        ],
+        "configuration": "./settings/context-settings-tex.json"
+      },
+      {
+        "id": "context.internal.tex",
+        "aliases": [
+          "ConTeXt internal TEX"
+        ],
+        "extensions": [
+          ".mklx",
+          ".mkxl"
         ],
         "configuration": "./settings/context-settings-tex.json"
       },
@@ -269,6 +277,11 @@
         "path": "./syntaxes/context-syntax-tex.json"
       },
       {
+        "language": "context.internal.tex",
+        "scopeName": "source.context.internal.tex",
+        "path": "./syntaxes/context-internal-tex.json"
+      },
+      {
         "language": "context.mps",
         "scopeName": "source.context.mps",
         "path": "./syntaxes/context-syntax-mps.json"
@@ -319,10 +332,147 @@
         "path": "./syntaxes/context-syntax-json.json"
       }
     ],
+    "semanticTokenTypes": [
+      {
+        "id": "contextStructure",
+        "superType": "class",
+        "description": "A ConTeXt structure command."
+      },
+      {
+        "id": "contextMathEnvironment",
+        "superType": "class",
+        "description": "A ConTeXt mathematical environment."
+      },
+      {
+        "id": "contextMathCommand",
+        "superType": "enumMember",
+        "description": "A ConTeXt mathematical command."
+      },
+      {
+        "id": "contextCommand",
+        "superType": "function",
+        "description": "A regular ConTeXt command."
+      },
+      {
+        "id": "contextFallbackCommand",
+        "superType": "macro",
+        "description": "An unknown or user-defined ConTeXt command."
+      },
+      {
+        "id": "contextRegister",
+        "superType": "variable",
+        "description": "A register declared by the active ConTeXt source."
+      },
+      {
+        "id": "contextArgumentKey",
+        "superType": "enum",
+        "description": "A known ConTeXt assignment key."
+      },
+      {
+        "id": "contextArgumentValue",
+        "superType": "enumMember",
+        "description": "A known ConTeXt assignment value."
+      },
+      {
+        "id": "contextReference",
+        "superType": "string",
+        "description": "A ConTeXt reference or bibliography key."
+      }
+    ],
+    "semanticTokenScopes": [
+      {
+        "language": "context.tex",
+        "scopes": {
+          "contextStructure": [
+            "entity.name.function.context.tex"
+          ],
+          "contextMathEnvironment": [
+            "constant.language.context.tex"
+          ],
+          "contextMathCommand": [
+            "variable.other.enummember.context.tex"
+          ],
+          "contextCommand": [
+            "entity.name.function.context.tex"
+          ],
+          "contextFallbackCommand": [
+            "constant.language.context.tex"
+          ],
+          "contextRegister": [
+            "constant.numeric.context.tex"
+          ],
+          "contextArgumentKey": [
+            "entity.name.enum.context.tex"
+          ],
+          "contextArgumentValue": [
+            "variable.other.enummember.context.tex"
+          ],
+          "contextReference": [
+            "string.context.tex"
+          ],
+          "namespace": [
+            "entity.name.namespace.context.tex"
+          ],
+          "keyword": [
+            "keyword.context.tex"
+          ],
+          "typeParameter": [
+            "variable.parameter.context.tex"
+          ]
+        }
+      },
+      {
+        "language": "context.internal.tex",
+        "scopes": {
+          "contextStructure": [
+            "entity.name.function.context.internal.tex"
+          ],
+          "contextMathEnvironment": [
+            "constant.language.context.internal.tex"
+          ],
+          "contextMathCommand": [
+            "variable.other.enummember.context.internal.tex"
+          ],
+          "contextCommand": [
+            "entity.name.function.context.internal.tex"
+          ],
+          "contextFallbackCommand": [
+            "constant.language.context.internal.tex"
+          ],
+          "contextRegister": [
+            "constant.numeric.context.internal.tex"
+          ],
+          "contextArgumentKey": [
+            "entity.name.enum.context.internal.tex"
+          ],
+          "contextArgumentValue": [
+            "variable.other.enummember.context.internal.tex"
+          ],
+          "contextReference": [
+            "string.context.internal.tex"
+          ],
+          "namespace": [
+            "entity.name.namespace.context.internal.tex"
+          ],
+          "keyword": [
+            "keyword.context.internal.tex"
+          ],
+          "typeParameter": [
+            "variable.parameter.context.internal.tex"
+          ]
+        }
+      }
+    ],
     "configurationDefaults": {
-      "context.tex": {
+      "[context.tex]": {
         "editor.wordBasedSuggestions": "off",
-        "editor.suggest.showWords": false
+        "editor.suggest.showWords": false,
+        "editor.semanticHighlighting.enabled": true
+      },
+      "[context.internal.tex]": {
+        "editor.wordBasedSuggestions": "off",
+        "editor.suggest.showWords": false,
+        "editor.semanticHighlighting.enabled": true
       }
     },
     "configuration": {
@@ -332,7 +482,7 @@
           "type": "string",
           "default": "",
           "scope": "machine",
-          "description": "Absolute path to the root of your ConTeXt / TeX installation. The extension finds context-en.xml and the context executable automatically below this folder."
+          "description": "Absolute path to the root of your ConTeXt / TeX installation. The extension resolves i-context.xml and the context executable automatically below this folder."
         },
         "contextIntellisense.mainFilePath": {
           "type": "string",
