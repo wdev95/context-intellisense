@@ -2,53 +2,22 @@
 
 const fs = require('fs');
 const path = require('path');
-const cp = require('child_process');
+const { commandWorks, fail, run, spawn } = require('./scripts/cli-utils');
 
-function needsWindowsShell(command) {
-  return process.platform === 'win32' && /\.(cmd|bat)$/i.test(command);
-}
-
-function quoteForShell(value) {
-  if (/^[A-Za-z0-9_./:-]+$/.test(value)) {
-    return value;
-  }
-  return `"${String(value).replace(/"/g, '\\"')}"`;
-}
-
-function spawn(command, args, options) {
-  if (needsWindowsShell(command)) {
-    const commandLine = [quoteForShell(command), ...args.map(quoteForShell)].join(' ');
-    return cp.spawnSync(commandLine, {
-      ...options,
-      shell: true
-    });
+/** Prevents VS Code's configuration registry race during live extension installs. */
+function isTargetVsCodeRunning(preferInsiders) {
+  if (process.platform !== 'win32') {
+    return false;
   }
 
-  return cp.spawnSync(command, args, {
-    ...options,
-    shell: false
+  const imageName = preferInsiders ? 'Code - Insiders.exe' : 'Code.exe';
+  const result = spawn('tasklist.exe', ['/FO', 'CSV', '/NH', '/FI', `IMAGENAME eq ${imageName}`], {
+    encoding: 'utf8',
+    windowsHide: true
   });
-}
-
-function fail(message) {
-  console.error(message);
-  process.exit(1);
-}
-
-function run(command, args, cwd, extraEnv = {}) {
-  const result = spawn(command, args, {
-    cwd,
-    stdio: 'inherit',
-    env: { ...process.env, ...extraEnv }
-  });
-  return result.status === 0;
-}
-
-function commandWorks(command, args = ['--version']) {
-  const result = spawn(command, args, {
-    stdio: 'ignore'
-  });
-  return result.status === 0;
+  return result.status === 0 && result.stdout.split(/\r?\n/).some((line) =>
+    line.toLowerCase().startsWith(`"${imageName.toLowerCase()}"`)
+  );
 }
 
 function pickLatestVsix(extensionRoot, publisher, name) {
@@ -131,6 +100,11 @@ function main() {
   }
 
   const preferInsiders = process.argv.includes('--insiders');
+  if (isTargetVsCodeRunning(preferInsiders)) {
+    const targetName = preferInsiders ? 'VS Code Insiders' : 'VS Code';
+    fail(`${targetName} is running. Close it before installing the VSIX; live installation can leave the Settings configuration registry stale.`);
+  }
+
   const codeCli = resolveCodeCli(preferInsiders);
   const targetName = preferInsiders ? 'VS Code Insiders' : 'VS Code';
   console.log(`Installing VSIX into ${targetName}: ${vsixPath}`);

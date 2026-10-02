@@ -3,7 +3,7 @@
   "displayName": "ConTeXt IntelliSense",
   "description": "ConTeXt syntax highlighting plus context-aware completions with command signatures and key-value hints.",
   "icon": "icon.png",
-  "version": "1.1.7",
+  "version": "1.1.161",
   "publisher": "wdev",
   "repository": {
     "type": "git",
@@ -19,7 +19,7 @@
   },
   "activationEvents": [
     "onStartupFinished",
-    "onLanguage:context.tex"
+    "onLanguage:context-tex"
   ],
   "main": "./extension.js",
   "categories": [
@@ -38,6 +38,10 @@
       {
         "command": "contextIntellisense.setMainFileFromExplorer",
         "title": "ConTeXt IntelliSense: Set as Main File"
+      },
+      {
+        "command": "contextIntellisense.compileFileFromExplorer",
+        "title": "ConTeXt IntelliSense: Compile This File"
       },
       {
         "command": "contextIntellisense.compileCurrentFile",
@@ -62,56 +66,112 @@
         "command": "contextIntellisense.clearWorkspace",
         "title": "Clear Workspace",
         "icon": "$(trash)"
+      },
+      {
+        "command": "contextIntellisense.hideTemporaryFiles",
+        "title": "Hide Temporary Files",
+        "icon": "$(eye-closed)"
+      },
+      {
+        "command": "contextIntellisense.showTemporaryFiles",
+        "title": "Show Temporary Files",
+        "icon": "$(eye)"
+      },
+      {
+        "command": "editor.action.commentLine",
+        "title": "Toggle Line Comment"
       }
     ],
     "keybindings": [
       {
+        "command": "contextIntellisense.compileMainFile",
+        "key": "ctrl+enter",
+        "when": "editorTextFocus && (editorLangId == context-tex || editorLangId == context-internal-tex) && contextIntellisense.hasMainFile && !suggestWidgetVisible && !inSnippetMode"
+      },
+      {
+        "command": "contextIntellisense.compileCurrentFile",
+        "key": "ctrl+shift+enter",
+        "when": "editorTextFocus && (editorLangId == context-tex || editorLangId == context-internal-tex) && !suggestWidgetVisible && !inSnippetMode"
+      },
+      {
         "command": "contextIntellisense.nextSnippetArgument",
         "key": "tab",
-        "when": "editorTextFocus && editorLangId == context.tex && inSnippetMode"
+        "when": "editorTextFocus && editorLangId == context-tex && inSnippetMode"
       }
     ],
     "menus": {
       "explorer/context": [
         {
-          "command": "contextIntellisense.setMainFileFromExplorer",
-          "group": "navigation@10",
+          "command": "contextIntellisense.compileFileFromExplorer",
+          "group": "navigation@9",
           "when": "resourceScheme == file && (resourceExtname == .tex || resourceExtname == .mkiv || resourceExtname == .mkxl || resourceExtname == .mkvi || resourceExtname == .mkil || resourceExtname == .mkix || resourceExtname == .mkxi || resourceExtname == .mklx)"
+        },
+        {
+          "command": "contextIntellisense.setMainFileFromExplorer",
+          "group": "navigation@11",
+          "when": "resourceScheme == file && (resourceExtname == .tex || resourceExtname == .mkiv || resourceExtname == .mkxl || resourceExtname == .mkvi || resourceExtname == .mkil || resourceExtname == .mkix || resourceExtname == .mkxi || resourceExtname == .mklx)"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "contextIntellisense.hideTemporaryFiles",
+          "group": "navigation@5",
+          "when": "view == explorer && !config.contextIntellisense.hideTemporaryFiles"
+        },
+        {
+          "command": "contextIntellisense.showTemporaryFiles",
+          "group": "navigation@5",
+          "when": "view == explorer && config.contextIntellisense.hideTemporaryFiles"
         }
       ],
       "editor/title": [
         {
           "command": "contextIntellisense.compileCurrentFile",
           "group": "navigation@10",
-          "when": "resourceScheme == file && resourceLangId == context.tex"
+          "when": "resourceScheme == file && resourceLangId == context-tex"
         },
         {
           "command": "contextIntellisense.compileMainFile",
           "group": "navigation@11",
-          "when": "resourceScheme == file && resourceLangId == context.tex && contextIntellisense.hasMainFile"
+          "when": "resourceScheme == file && resourceLangId == context-tex && contextIntellisense.hasMainFile"
         },
         {
           "command": "contextIntellisense.showPdfForCurrentFile",
           "group": "navigation@12",
-          "when": "resourceScheme == file && resourceLangId == context.tex && contextIntellisense.hasPdfForActiveFile"
+          "when": "resourceScheme == file && resourceLangId == context-tex && contextIntellisense.hasPdfForActiveFile"
         },
         {
           "command": "contextIntellisense.clearWorkspace",
           "group": "navigation@13",
-          "when": "resourceScheme == file && resourceLangId == context.tex"
+          "when": "resourceScheme == file && resourceLangId == context-tex"
         }
       ],
       "editor/context": [
         {
+          "command": "contextIntellisense.compileCurrentFile",
+          "group": "navigation@10",
+          "when": "editorLangId == context-tex || editorLangId == context-internal-tex"
+        },
+        {
+          "command": "contextIntellisense.compileMainFile",
+          "group": "navigation@11",
+          "when": "(editorLangId == context-tex || editorLangId == context-internal-tex) && contextIntellisense.hasMainFile"
+        },
+        {
+          "command": "editor.action.commentLine",
+          "group": "1_modification",
+          "when": "editorLangId == context-tex || editorLangId == context-internal-tex"
+        },
+        {
           "command": "contextIntellisense.synctexForward",
           "group": "navigation@20",
-          "when": "resourceLangId == context.tex && config.contextIntellisense.synctex == rightclick"
+          "when": "resourceLangId == context-tex && config.contextIntellisense.synctex == rightclick"
         }
       ]
     },
     "languages": [
       {
-        "id": "context.tex",
+        "id": "context-tex",
         "aliases": [
           "ConTeXt TEX"
         ],
@@ -126,7 +186,7 @@
         "configuration": "./settings/context-settings-tex.json"
       },
       {
-        "id": "context.internal.tex",
+        "id": "context-internal-tex",
         "aliases": [
           "ConTeXt internal TEX"
         ],
@@ -272,12 +332,12 @@
     ],
     "grammars": [
       {
-        "language": "context.tex",
+        "language": "context-tex",
         "scopeName": "source.context.tex",
         "path": "./syntaxes/context-syntax-tex.json"
       },
       {
-        "language": "context.internal.tex",
+        "language": "context-internal-tex",
         "scopeName": "source.context.internal.tex",
         "path": "./syntaxes/context-internal-tex.json"
       },
@@ -381,7 +441,7 @@
     ],
     "semanticTokenScopes": [
       {
-        "language": "context.tex",
+        "language": "context-tex",
         "scopes": {
           "contextStructure": [
             "entity.name.function.context.tex"
@@ -422,7 +482,7 @@
         }
       },
       {
-        "language": "context.internal.tex",
+        "language": "context-internal-tex",
         "scopes": {
           "contextStructure": [
             "entity.name.function.context.internal.tex"
@@ -464,15 +524,8 @@
       }
     ],
     "configurationDefaults": {
-      "[context.tex]": {
-        "editor.wordBasedSuggestions": "off",
-        "editor.suggest.showWords": false,
-        "editor.semanticHighlighting.enabled": true
-      },
-      "[context.internal.tex]": {
-        "editor.wordBasedSuggestions": "off",
-        "editor.suggest.showWords": false,
-        "editor.semanticHighlighting.enabled": true
+      "[context-tex][context-internal-tex]": {
+        "editor.wordSeparators": "`~!@#$%^&*()-=+[{]}\\\\|;'\",.<>/?"
       }
     },
     "configuration": {
@@ -494,6 +547,12 @@
           "type": "boolean",
           "default": true,
           "description": "Open the generated PDF automatically after a successful compile. Uses Academic PDF Viewer (ovolab-veritas.academic-pdf-viewer) when installed, then your default vs code pdf viewer, then your system's default pdf viewer."
+        },
+        "contextIntellisense.hideTemporaryFiles": {
+          "type": "boolean",
+          "default": false,
+          "scope": "window",
+          "description": "Hide files that Clear Workspace can delete from the Explorer. This manages matching entries in workspace files.exclude settings."
         },
         "contextIntellisense.synctex": {
           "type": "string",
@@ -528,5 +587,14 @@
       }
     }
   },
-  "license": "MIT"
+  "license": "MIT",
+  "files": [
+    "extension.js",
+    "src/**",
+    "settings/**",
+    "syntaxes/**",
+    "icon.png",
+    "README.md",
+    "LICENSE"
+  ]
 }

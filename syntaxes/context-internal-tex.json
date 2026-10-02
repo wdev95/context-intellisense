@@ -1,0 +1,30 @@
+{
+  "name": "ConTeXt internal TEX",
+  "scopeName": "source.context.internal.tex",
+  "patterns": [
+    {
+      "include": "#internal-command"
+    },
+    {
+      "include": "source.context.tex"
+    }
+  ],
+  "repository": {
+    "internal-command": {
+      "patterns": [
+        {
+          "match": "\\\\[A-Za-z]![A-Za-z@:_!?]+",
+          "name": "constant.language.context.internal.tex"
+        },
+        {
+          "match": "\\\\\\?{2,3}[A-Za-z@:_!?]+",
+          "name": "entity.name.namespace.context.internal.tex"
+        },
+        {
+          "match": "\\\\[A-Za-z@:_!?]+",
+          "name": "support.function.context.internal.tex"
+        }
+      ]
+    }
+  }
+}

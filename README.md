@@ -17,9 +17,26 @@ Source code: [github.com/wdev95/context-intellisense](https://github.com/wdev95/
 *   Run buttons for current file and configured main file
 *   Main file marker in Explorer via file decoration
 
+## Project-defined commands
+
+Add a `%D` XML docstring anywhere in a workspace TeX source. The fragment uses the same `cd:*` syntax as ConTeXt's interface files:
+
+```tex
+%D <cd:command name="ref" level="document" category="references">
+%D   <cd:arguments>
+%D     <cd:keywords>
+%D       <cd:constant type="cd:reference"/>
+%D     </cd:keywords>
+%D   </cd:arguments>
+%D </cd:command>
+\def\ref[#1:#2]{\csname ref#1\endcsname[#1:#2]}
+```
+
+The extension reads contiguous `%D` blocks containing `<cd:command>` from workspace TeX sources and merges them with the official interface data; the block need not be adjacent to a macro definition. `cd:resolve` and `cd:inherit` work as in ConTeXt's XML. Argument types also resolve workspace collections: if `\definesym[name=sym]` and `\addsym[sym][alpha]` declare a collection, `<cd:constant type="cd:sym"/>` offers its keys. This lets dynamic commands such as `\sym` declare their argument semantics without command-specific extension code.
+
 ## Configuration
 
-On first start, if no valid TeX root path can be resolved automatically, the extension opens a setup dialog and lets you pick your ConTeXt / TeX installation folder.
+On first start, the extension looks for a `context` executable on `PATH`. When it finds a ConTeXt distribution containing `i-context.xml`, it saves that distribution's TeX root to `contextIntellisense.texRootPath`. If it cannot resolve a root, it offers a folder picker. You can change the saved root later with `ConTeXt IntelliSense: Configure TeX Root Path`.
 
 You can re-open this setup anytime from the command palette with:
 
@@ -54,7 +71,7 @@ The editor provides two run actions for ConTeXt `.tex` files:
 *   `Compile Current File`
 *   `Compile Main File`
 
-After a successful compile, the generated PDF is opened automatically by default. Disable `contextIntellisense.openPdfAfterCompile` to turn this off. An already open PDF is refreshed in place after compilation; the PDF editor is not opened again, so its split, detached window, position, and size remain unchanged.
+After a successful compile, the generated PDF is opened automatically by default. Disable `contextIntellisense.openPdfAfterCompile` to turn this off. An already open PDF in the Academic PDF Viewer is refreshed in place; for the system default PDF viewer, the extension invokes the registered PDF handler after each compile.
 
 ## Install (From Release VSIX)
 
