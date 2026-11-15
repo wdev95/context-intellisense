@@ -26,6 +26,14 @@ jobs:
         with:
           node-version: 24
 
+      - name: Setup Rust and WebAssembly target
+        uses: actions-rust-lang/setup-rust-toolchain@v2
+        with:
+          target: wasm32-unknown-unknown
+
+      - name: Install Node dependencies
+        run: npm ci
+
       - name: Validate and set version
         shell: bash
         env:
@@ -42,6 +50,12 @@ jobs:
           fi
 
           npm version "$VERSION" --no-git-tag-version --allow-same-version
+
+      - name: Install matching wasm-bindgen CLI
+        run: cargo install wasm-bindgen-cli --version 0.2.129 --locked
+
+      - name: Build equation renderer
+        run: npm run build-context-equation
 
       - name: Build VSIX
         run: npx --yes @vscode/vsce package --allow-missing-repository
