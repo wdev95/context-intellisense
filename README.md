@@ -1,4 +1,4 @@
-> \[!WARNING\]  
+> [!WARNING]
 > The code for this extension was generated entirely by AI ("vibe coding"). Review and use it at your own discretion.
 
 # ConTeXt IntelliSense
@@ -18,13 +18,35 @@ Source code: [github.com/wdev95/context-intellisense](https://github.com/wdev95/
 *   Main file marker in Explorer via file decoration
 *   Rendered equation previews on hover and a visual equation editor for ConTeXt math
 
+## Screenshots
+
+Command completion:
+
+![ConTeXt command completion](screenshots/command-completion.png)
+
+Argument completion:
+
+![ConTeXt argument completion](screenshots/argument-completion.png)
+
+Key and value completion in `key=Value`-type arguments:
+
+![ConTeXt key-value completion](screenshots/value-completion.png)
+
 ## Math rendering by mathra
 
-Hover over a formula to see its rendered equation. The preview recognizes `$...$`, `$$...$$`, `\(...\)`, `\[...\]`, and ConTeXt `\start...` / `\stop...` math environments. Use **Open Equation Editor** or `Ctrl+Alt+M` (`Cmd+Alt+M` on macOS) to edit or insert an equation. The standalone editor reads and writes ConTeXt math syntax directly.
+Hover over a formula to see its rendered equation:
 
-Disable equation previews with `contextIntellisense.math.hover.enabled`. The graphical editor remains available.
+![Math hover](screenshots/math-hover.png)
 
-The equation renderer and visual editor are ports of source code from [Mathra](https://github.com/matheusmota-dev-br/mathra), adapted for ConTeXt syntax. Many thanks to [Matheus Mota](https://github.com/matheusmota-dev-br) for creating and sharing this work.
+The preview recognizes `$...$`, `$$...$$`, `\(...\)`, `\[...\]`, and ConTeXt `\start...` / `\stop...` math environments. 
+
+Use **Open Equation Editor** or `Ctrl+Alt+M` (`Cmd+Alt+M` on macOS) to edit or insert an equation:
+
+![Math panel](screenshots/math-panel.png)
+
+> [!IMPORTANT]
+> The equation renderer and visual editor are ports of source code from [Mathra](https://github.com/matheusmota-dev-br/mathra), adapted for ConTeXt syntax. 
+> Many thanks to [Matheus Mota](https://github.com/matheusmota-dev-br) for creating and sharing this work.
 
 ## Project-defined commands
 
@@ -115,9 +137,17 @@ node build-vsix.js
 
 Behavior:
 
-*   Bumps patch version in `package.json`
-*   Builds a new VSIX package
-*   Reverts version bump automatically if build fails
+*   Builds the equation renderer and a new VSIX package
+*   Uses the next patch version after the newest local VSIX file
+*   Keeps `package.json` and `package-lock.json` unchanged; release versions are set by the release workflow
+
+## Repository layout
+
+*   `src/` contains the extension entry logic, language providers, shared core modules, and equation editor integration.
+*   `scripts/` contains build helpers. `language-configurations/` holds editor behavior such as comments and bracket pairs; `syntaxes/` holds the syntax grammars.
+*   `vendor/context-equation/` contains the adapted equation renderer source. The build generates its runtime files under `media/` and uses `out/` for build output; both generated folders are ignored by Git.
+*   `images/` contains icons shipped with the extension; `assets/branding/` holds source artwork that is not packaged. `screenshots/` contains repository documentation images.
+*   The repository root contains the extension manifest, entry point, command-line helpers, and project documentation.
 
 ## Automated GitHub Release
 
@@ -134,5 +164,5 @@ It performs:
 
 ## Requirements
 
-*   VS Code 1.80+
+*   VS Code 1.106+
 *   Node.js 24+ for local builds and releases

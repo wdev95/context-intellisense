@@ -35,6 +35,23 @@ function bumpPatch(version) {
   return `${major}.${minor}.${patch + 1}`;
 }
 
+function compareVersions(left, right) {
+  const a = left.split('.').map(Number);
+  const b = right.split('.').map(Number);
+  return a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
+}
+
+function nextBuildVersion(extensionRoot, packageName, sourceVersion) {
+  const prefix = `${packageName}-`;
+  const versions = listVsixFiles(extensionRoot)
+    .map(({ file }) => file.startsWith(prefix) && file.endsWith('.vsix')
+      ? file.slice(prefix.length, -5)
+      : '')
+    .filter((version) => /^\d+\.\d+\.\d+$/.test(version));
+  versions.push(sourceVersion);
+  return bumpPatch(versions.sort(compareVersions).at(-1));
+}
+
 function main() {
   const extensionRoot = path.resolve(__dirname);
   const isWindows = process.platform === 'win32';
@@ -65,52 +82,24 @@ function main() {
     fail('ConTeXt equation renderer build failed. Install the Rust WebAssembly target and wasm-bindgen CLI, then retry.');
   }
 
-  const nextVersion = bumpPatch(previousVersion);
-  const packageLockPath = path.join(extensionRoot, 'package-lock.json');
-  const originalLockText = fs.existsSync(packageLockPath)
-    ? fs.readFileSync(packageLockPath, 'utf8')
-    : undefined;
-  let packageLock;
-  if (originalLockText) {
-    try {
-      packageLock = JSON.parse(originalLockText);
-    } catch (error) {
-      fail(`Invalid package-lock.json: ${error.message}`);
-    }
-  }
-  pkg.version = nextVersion;
-  fs.writeFileSync(packageJsonPath, `${JSON.stringify(pkg, null, 2)}\n`, 'utf8');
-  if (packageLock) {
-    packageLock.version = nextVersion;
-    if (packageLock.packages?.['']) packageLock.packages[''].version = nextVersion;
-    fs.writeFileSync(packageLockPath, `${JSON.stringify(packageLock, null, 2)}\n`, 'utf8');
-  }
-  console.log(`Version bump: ${previousVersion} -> ${nextVersion}`);
+  const nextVersion = nextBuildVersion(extensionRoot, pkg.name, previousVersion);
+  console.log(`VSIX build version: ${nextVersion} (source version remains ${previousVersion})`);
 
   const beforeVsix = new Set(listVsixFiles(extensionRoot).map((entry) => entry.file));
 
-  let buildSucceeded = false;
-  try {
-    const localVsce = path.join(extensionRoot, 'node_modules', '.bin', isWindows ? 'vsce.cmd' : 'vsce');
-    const bundledNpx = path.join(nodeDir, isWindows ? 'npx.cmd' : 'npx');
+  const localVsce = path.join(extensionRoot, 'node_modules', '.bin', isWindows ? 'vsce.cmd' : 'vsce');
+  const bundledNpx = path.join(nodeDir, isWindows ? 'npx.cmd' : 'npx');
 
-    const vsceCommand = resolveFirstWorkingCommand([localVsce, 'vsce'], ['--version'], commandEnv);
-    const npxCommand = resolveFirstWorkingCommand([bundledNpx, 'npx'], ['--version'], commandEnv);
+  const vsceCommand = resolveFirstWorkingCommand([localVsce, 'vsce'], ['--version'], commandEnv);
+  const npxCommand = resolveFirstWorkingCommand([bundledNpx, 'npx'], ['--version'], commandEnv);
 
-    if (vsceCommand) {
-      buildSucceeded = run(vsceCommand, ['package', '--allow-missing-repository'], extensionRoot, commandEnv);
-    } else if (npxCommand) {
-      buildSucceeded = run(npxCommand, ['--yes', '@vscode/vsce', 'package', '--allow-missing-repository'], extensionRoot, commandEnv);
-    } else {
-      fail("Could not find 'vsce' or 'npx'. Install Node.js and run: npm i -g @vscode/vsce");
-    }
-  } finally {
-    if (!buildSucceeded) {
-      // Roll back version bump if packaging fails.
-      fs.writeFileSync(packageJsonPath, originalText, 'utf8');
-      if (originalLockText) fs.writeFileSync(packageLockPath, originalLockText, 'utf8');
-      console.log(`Build failed. Reverted package.json version to ${previousVersion}.`);
-    }
+  let buildSucceeded;
+  if (vsceCommand) {
+    buildSucceeded = run(vsceCommand, ['package', nextVersion, '--no-update-package-json', '--allow-missing-repository'], extensionRoot, commandEnv);
+  } else if (npxCommand) {
+    buildSucceeded = run(npxCommand, ['--yes', '@vscode/vsce', 'package', nextVersion, '--no-update-package-json', '--allow-missing-repository'], extensionRoot, commandEnv);
+  } else {
+    fail("Could not find 'vsce' or 'npx'. Install Node.js and run: npm i -g @vscode/vsce");
   }
 
   if (!buildSucceeded) {
