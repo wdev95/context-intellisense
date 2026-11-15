@@ -1,7 +1,11 @@
 /** Creates the ConTeXt source-data loader and command metadata services. */
 module.exports = function createDataProviders(deps) {
   const { fs, path, vscode, loadInterfaceXml, expandInterfaceDefinitions, createDataCache, resolveConfiguredPath, resolveXmlPathFromTexRoot, resolveContextExecutableFromTexRoot, parseCommandMap, getCommandCompletionKind, stripTeXComment } = deps;
-  // The interface XML omits NR's optional reference and suffix arguments from math-ali.mkxl.
+  const workspaceInterfaceWatcherPatterns = [
+    '**/*.{tex,mkiv,mkvi,mkxl,mklx,mkxi,mkil,mkix}',
+    '**/i-*.xml'
+  ];
+  // Supplement argument metadata omitted from the installed interface XML.
   const supplementalInterfaceXml = `
 <cd:command name="NR" referenceSourceArgument="0">
   <cd:arguments>
@@ -13,6 +17,21 @@ module.exports = function createDataProviders(deps) {
     <cd:keywords optional="yes">
       <cd:constant type="cd:text"/>
     </cd:keywords>
+  </cd:arguments>
+</cd:command>
+<cd:command name="numberhere" referenceSourceArgument="0">
+  <cd:arguments>
+    <cd:keywords optional="yes">
+      <cd:constant type="cd:reference"/>
+    </cd:keywords>
+  </cd:arguments>
+</cd:command>
+<cd:command name="setupcombinedlist">
+  <cd:arguments>
+    <cd:keywords><cd:constant type="cd:list"/></cd:keywords>
+    <cd:assignments list="yes">
+      <cd:inherit name="setuplist"/>
+    </cd:assignments>
   </cd:arguments>
 </cd:command>`;
   let cache = deps.getCache();
@@ -126,6 +145,74 @@ function loadFontCompletions(xmlPath) {
   }
 
   return completions;
+}
+
+/** Reads ConTeXt's registered body-font sizes for the shared dimension value type. */
+function loadBodyFontSizes(xmlPath) {
+  const texContextRoot = path.dirname(path.dirname(path.dirname(xmlPath)));
+  const candidates = ['mkxl/type-siz.mkxl', 'mkiv/type-siz.mkiv']
+    .map(file => path.join(texContextRoot, 'base', file));
+  const sizes = new Set();
+  for (const file of candidates) {
+    if (!fs.existsSync(file)) continue;
+    const source = fs.readFileSync(file, 'utf8').replace(/%[^\r\n]*/g, '');
+    for (const [, list] of source.matchAll(/\\definebodyfont(?:environment)?\s*\[([^\]]*)\]/g)) {
+      for (const value of list.split(',').map(item => item.trim())) {
+        if (/^\d+(?:\.\d+)?pt$/.test(value)) sizes.add(value);
+      }
+    }
+  }
+  return [...sizes].sort((left, right) => parseFloat(left) - parseFloat(right));
+}
+
+/** Reads section-structure keys and enum values from ConTeXt's handler defaults. */
+function loadStructureParameters(xmlPath) {
+  const texContextRoot = path.dirname(path.dirname(path.dirname(xmlPath)));
+  const filePath = path.join(texContextRoot, 'base', 'mkxl', 'strc-sec.mkxl');
+  if (!fs.existsSync(filePath)) return [];
+
+  const source = fs.readFileSync(filePath, 'utf8')
+    .split(/\r?\n/)
+    .map(stripTeXComment)
+    .join('\n');
+  const parameters = new Map();
+  for (const match of source.matchAll(/\\setupstructure\s*\[([\s\S]*?)\]/g)) {
+    for (const [, name, value] of match[1].matchAll(/\\c!([A-Za-z][A-Za-z0-9]*)\s*=\s*([^,\]\s]+)/g)) {
+      const values = [...value.matchAll(/\\v!([A-Za-z][A-Za-z0-9]*)/g)].map(([, item]) => item);
+      const entry = parameters.get(name) || new Set();
+      values.forEach(item => entry.add(item));
+      parameters.set(name, entry);
+    }
+  }
+  return [...parameters].map(([name, values]) => ({ name, values: [...values] }));
+}
+
+/** Adds source-defined structure parameters to the XML schema for section environments. */
+function addStructureParameters(xmlText, xmlPath) {
+  const parameters = loadStructureParameters(xmlPath);
+  if (parameters.length === 0) return xmlText;
+
+  return xmlText.replace(/<cd:command\b(?=[^>]*\btype="environment")(?=[^>]*\bcategory="structure")(?=[^>]*\bfile="strc-sec\.mkxl")[^>]*>[\s\S]*?<\/cd:command>/g, block => {
+    const assignments = /<cd:assignments\b[^>]*>[\s\S]*?<\/cd:assignments>/.exec(block);
+    if (!assignments) return block;
+    const known = new Set([...assignments[0].matchAll(/<cd:parameter\b[^>]*\bname="([^"]+)"/g)].map(([, name]) => name.toLowerCase()));
+    const missing = parameters.filter(({ name }) => !known.has(name.toLowerCase()));
+    if (missing.length === 0) return block;
+    const extra = missing.map(({ name, values }) =>
+      `<cd:parameter name="${name}">${values.map(value => `<cd:constant type="${value}"/>`).join('')}</cd:parameter>`
+    ).join('');
+    return block.replace(assignments[0], assignments[0].replace(/<\/cd:assignments>$/, `${extra}</cd:assignments>`));
+  });
+}
+
+/** Preserves arbitrary first-position names accepted by typescript environments. */
+function addTypescriptNameType(xmlText) {
+  return xmlText.replace(/<cd:command\b(?=[^>]*\bname="typescript")(?=[^>]*\btype="environment")[^>]*>[\s\S]*?<\/cd:command>/g, block => {
+    const firstKeywords = /<cd:keywords\b[^>]*>[\s\S]*?<\/cd:keywords>/.exec(block);
+    if (!firstKeywords || /<cd:constant\b[^>]*\btype="cd:name"/.test(firstKeywords[0])) return block;
+    const extended = firstKeywords[0].replace(/<\/cd:keywords>$/, '<cd:constant type="cd:name"/></cd:keywords>');
+    return block.replace(firstKeywords[0], extended);
+  });
 }
 
 function getCommandEntry(commandName) {
@@ -402,16 +489,16 @@ function addFontMetadata(fontCompletions, commandMetadata) {
     });
   }
 
-  /** Reads project TeX sources and returns their local interface fragments. */
-  async function loadWorkspaceInterfaceDocstrings() {
+  /** Reads workspace TeX docstrings and i-*.xml interface definitions. */
+  async function loadWorkspaceInterfaceDefinitions() {
     if (!vscode.workspace.workspaceFolders || vscode.workspace.workspaceFolders.length === 0) {
       return '';
     }
 
-    const files = await vscode.workspace.findFiles(
-      '**/*.{tex,mkiv,mkvi,mkxl,mklx,mkxi,mkiv}',
-      '**/{.git,node_modules,build,out}/**'
-    );
+    const excludePattern = '**/{.git,node_modules,build,out}/**';
+    const [files, interfaceFiles] = await Promise.all(workspaceInterfaceWatcherPatterns.map(
+      pattern => vscode.workspace.findFiles(pattern, excludePattern)
+    ));
     const sources = await Promise.all(files.map(async uri => {
       try {
         return await fs.promises.readFile(uri.fsPath, 'utf8');
@@ -420,10 +507,19 @@ function addFontMetadata(fontCompletions, commandMetadata) {
       }
     }));
     const docstrings = sources.map(extractInterfaceDocstrings).filter(Boolean).join('\n');
-    return expandWorkspaceCollectionTypes(docstrings, sources);
+    const visited = new Set();
+    const interfaceXml = interfaceFiles.map(uri => {
+      try {
+        return loadInterfaceXml(uri.fsPath, visited);
+      } catch (error) {
+        reportDataWarning(uri.fsPath, `Could not read workspace interface XML: ${error.message || error}`);
+        return '';
+      }
+    }).filter(Boolean).join('\n');
+    return expandWorkspaceCollectionTypes(`${docstrings}\n${interfaceXml}`, sources);
   }
 
-  async function loadData(configuredTexRootPath) {
+  async function loadData(configuredTexRootPath, force = false) {
   const texRootPath = resolveConfiguredPath(configuredTexRootPath);
   const xmlPath = resolveXmlPathFromTexRoot(texRootPath);
   if (!xmlPath) {
@@ -431,7 +527,7 @@ function addFontMetadata(fontCompletions, commandMetadata) {
     return;
   }
 
-  if (cache.xmlPath === xmlPath && cache.commandCompletions.length > 0) {
+  if (!force && cache.xmlPath === xmlPath && cache.commandCompletions.length > 0) {
     return;
   }
 
@@ -439,19 +535,24 @@ function addFontMetadata(fontCompletions, commandMetadata) {
   try {
     xmlText = expandInterfaceDefinitions(loadInterfaceXml(xmlPath));
   } catch (err) {
-      reportDataWarning(xmlPath, `Could not read i-context.xml. Check contextIntellisense.texRootPath.`);
+      reportDataWarning(xmlPath, `Could not read i-context.xml. Check contextIntellisense.distribution.texRootPath.`);
       cache = createDataCache(xmlPath);
       return;
   }
 
   let workspaceXml = '';
   try {
-    workspaceXml = await loadWorkspaceInterfaceDocstrings();
+    workspaceXml = await loadWorkspaceInterfaceDefinitions();
   } catch (error) {
     reportDataWarning(xmlPath, `Could not read local ConTeXt interface documentation: ${error.message || error}`);
   }
 
-  const parsed = parseCommandMap(expandInterfaceDefinitions(`${xmlText}\n${workspaceXml}\n${supplementalInterfaceXml}`));
+  const fontSizeValuesXml = `<cd:define name="value-fontsize">${loadBodyFontSizes(xmlPath)
+    .map(value => `<cd:constant type="${value}"/>`).join('')}</cd:define>`;
+  const interfaceXml = expandInterfaceDefinitions(
+    `${xmlText}\n${workspaceXml}\n${fontSizeValuesXml}\n${supplementalInterfaceXml}`
+  );
+  const parsed = parseCommandMap(addTypescriptNameType(addStructureParameters(interfaceXml, xmlPath)));
   const fontCompletions = loadFontCompletions(xmlPath);
   const commandMetadata = parsed.commandMetadata;
   addFontMetadata(fontCompletions, commandMetadata);
@@ -500,5 +601,5 @@ function addFontMetadata(fontCompletions, commandMetadata) {
 }
 
 /** Returns whether a delimiter at a source position is escaped. */
-  return { cleanFontToken, parseFontSourceFile, loadFontCompletions, getCommandEntry, loadMathPrimitiveMetadata, getContextSourceFiles, loadRegisterMetadata, createRegisterCompletions, addFontMetadata, loadData, setDataWarningReporter, getCache: () => cache };
+  return { getCommandEntry, loadData, setDataWarningReporter, workspaceInterfaceWatcherPatterns, getCache: () => cache };
 };

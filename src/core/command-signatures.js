@@ -15,17 +15,25 @@ function describeArgumentSpec(spec) {
   return '...';
 }
 
-/** Builds a snippet containing one placeholder for every non-content argument. */
-function buildArgumentSnippet(argumentSpecs, startIndex = 1) {
+/** Builds argument placeholders and an optional default key in the first argument. */
+function buildArgumentSnippet(argumentSpecs, startIndex = 1, firstArgumentKey = '') {
   const parts = [];
   let tabIndex = startIndex;
+  let argumentIndex = 0;
   for (const spec of argumentSpecs || []) {
     if (spec.kind === 'content') {
       continue;
     }
     const delimiter = getDelimiterInfo(spec.delimiter);
-    parts.push(`${delimiter.open}${'${' + tabIndex + '}'}${delimiter.close}`);
+    const placeholder = '${' + tabIndex + '}';
+    const defaultValue = argumentIndex === 0
+      && spec.kind === 'assignments'
+      && spec.parameterNames?.some(name => name.toLowerCase() === firstArgumentKey.toLowerCase())
+      ? `${firstArgumentKey}={${placeholder}}`
+      : placeholder;
+    parts.push(`${delimiter.open}${defaultValue}${delimiter.close}`);
     tabIndex += 1;
+    argumentIndex += 1;
   }
   return { text: parts.join(''), nextIndex: tabIndex };
 }

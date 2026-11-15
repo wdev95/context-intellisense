@@ -1,0 +1,35 @@
+[package]
+name = "context-equation-core"
+description = "ConTeXt equation parser, layout engine, and SVG renderer."
+version.workspace = true
+edition.workspace = true
+# the code is MIT OR Apache-2.0; the embedded STIX Two Math font is OFL-1.1 (as Noto Emoji, built only
+# with the `emoji` feature), and Latin Modern Math
+# (built only with the `latin-modern` feature) is under the GUST Font License, which SPDX does not list:
+# its text is in fonts/
+license = "(MIT OR Apache-2.0) AND OFL-1.1"
+keywords = ["latex", "math", "svg", "accessibility", "equation"]
+categories = ["text-processing", "rendering", "accessibility", "mathematics", "science"]
+include = ["src/**", "fonts/**", "Cargo.toml"]
+
+[features]
+default = []
+# structural chemistry (chemfig structures, reaction schemes, mechanisms): spec/chemistry.md
+chem = []
+# Latin Modern Math (the OpenType Computer Modern, GUST Font License) as a second font,
+# chosen with `convert_in_font` and `typeset_in_font`: some 430 KB more in the binary
+latin-modern = []
+# Noto Emoji (monochrome, OFL) embedded as the default fallback font, for the emoji the math font
+# lacks (Options::fallback_fonts): about 780 KB more in the binary. On in the CLI and Python package.
+emoji = []
+
+[dependencies]
+ttf-parser = "0.25"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# MathML input: a small XML parser with no dependencies of its own
+roxmltree = "0.20"
+
+[dev-dependencies]
+# tests/fonts.rs reads the original fonts in tools/fonts to check the embedded subsets against them
+ttf-parser = "0.25"

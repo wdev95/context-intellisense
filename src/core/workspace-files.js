@@ -34,7 +34,7 @@ function isTemporaryWorkspaceFile(filePath, siblingFiles) {
 
 /** Returns the watcher glob for files used by workspace completions. */
 function workspaceFileWatcherPattern() {
-  return `**/*.{${[...externalFigureExtensions, 'tex'].join(',')}}`;
+  return '**/*';
 }
 
 /** Returns Explorer exclusion globs for generated image files. */

@@ -61,9 +61,30 @@ function main() {
     fail('package.json must contain publisher, name, and version.');
   }
 
+  if (!run(process.execPath, [path.join('scripts', 'build-context-equation.js')], extensionRoot, commandEnv)) {
+    fail('ConTeXt equation renderer build failed. Install the Rust WebAssembly target and wasm-bindgen CLI, then retry.');
+  }
+
   const nextVersion = bumpPatch(previousVersion);
+  const packageLockPath = path.join(extensionRoot, 'package-lock.json');
+  const originalLockText = fs.existsSync(packageLockPath)
+    ? fs.readFileSync(packageLockPath, 'utf8')
+    : undefined;
+  let packageLock;
+  if (originalLockText) {
+    try {
+      packageLock = JSON.parse(originalLockText);
+    } catch (error) {
+      fail(`Invalid package-lock.json: ${error.message}`);
+    }
+  }
   pkg.version = nextVersion;
   fs.writeFileSync(packageJsonPath, `${JSON.stringify(pkg, null, 2)}\n`, 'utf8');
+  if (packageLock) {
+    packageLock.version = nextVersion;
+    if (packageLock.packages?.['']) packageLock.packages[''].version = nextVersion;
+    fs.writeFileSync(packageLockPath, `${JSON.stringify(packageLock, null, 2)}\n`, 'utf8');
+  }
   console.log(`Version bump: ${previousVersion} -> ${nextVersion}`);
 
   const beforeVsix = new Set(listVsixFiles(extensionRoot).map((entry) => entry.file));
@@ -87,6 +108,7 @@ function main() {
     if (!buildSucceeded) {
       // Roll back version bump if packaging fails.
       fs.writeFileSync(packageJsonPath, originalText, 'utf8');
+      if (originalLockText) fs.writeFileSync(packageLockPath, originalLockText, 'utf8');
       console.log(`Build failed. Reverted package.json version to ${previousVersion}.`);
     }
   }

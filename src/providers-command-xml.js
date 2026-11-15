@@ -8,6 +8,28 @@ function parseCommandMap(xmlText) {
   const commandArgumentSpecCandidates = new Map();
   const structureEnvironments = new Set();
   const commandMetadata = new Map();
+  const namedValueDefinitions = new Map();
+  for (const [, attrs, body] of xmlText.matchAll(/<cd:define\b([^>]*)>([\s\S]*?)<\/cd:define>/g)) {
+    const name = parseAttributes(attrs).name || '';
+    if (!name.startsWith('value-')) continue;
+    const values = [...body.matchAll(/<cd:constant\b([^>]*)\/>/g)]
+      .map(([, constantAttrs]) => {
+        const constant = parseAttributes(constantAttrs);
+        return (constant.value || constant.type || '').trim();
+      })
+      .filter(value => value && !value.startsWith('cd:'));
+    if (values.length) namedValueDefinitions.set(name.slice(6).toLowerCase(), values);
+  }
+  const fontSizeValues = namedValueDefinitions.get('fontsize') || [];
+
+  function parseCommandNames(value) {
+    return String(value || '').split(',').map(name => name.trim()).filter(Boolean);
+  }
+
+  function getCommandNamedValues(commandName) {
+    const semanticName = String(commandName || '').replace(/^(?:setup|define|adapt)/i, '').toLowerCase();
+    return namedValueDefinitions.get(semanticName) || [];
+  }
 
   function registerCommandMetadata(commandName, attrs) {
     if (!commandName) {
@@ -40,7 +62,7 @@ function parseCommandMap(xmlText) {
     });
   }
 
-  function parseArgumentSpecs(commandBlock) {
+  function parseArgumentSpecs(commandBlock, commandName, category = '') {
     const out = [];
     const argumentsBlockMatch = commandBlock.match(/<cd:arguments\b[^>]*>([\s\S]*?)<\/cd:arguments>/);
     if (!argumentsBlockMatch) {
@@ -68,6 +90,8 @@ function parseCommandMap(xmlText) {
       if (kind === 'keywords') {
         const keywordValues = [];
         const keywordTypes = [];
+        let allowsArbitraryValues = false;
+        let allowsFontSizeValues = false;
         const cRe = /<cd:constant\b([^>]*)\/>/g;
         let cm;
         while ((cm = cRe.exec(body)) !== null) {
@@ -77,14 +101,18 @@ function parseCommandMap(xmlText) {
 
           if (explicitValue && !explicitValue.startsWith('cd:')) {
             keywordValues.push(explicitValue);
-          }
-
-          if (explicitType) {
+          } else if (explicitType.startsWith('cd:')) {
             keywordTypes.push(explicitType);
+            allowsFontSizeValues ||= explicitType === 'cd:dimension' && category.toLowerCase() === 'fonts';
+            allowsArbitraryValues ||= !['cd:file', 'cd:reference'].includes(explicitType.toLowerCase());
+          } else if (explicitType) {
+            keywordValues.push(explicitType);
           }
         }
 
-        out.push({ kind, optional, delimiter, list, keywordValues, keywordTypes });
+        if (allowsFontSizeValues) keywordValues.push(...fontSizeValues);
+        if (keywordTypes.includes('cd:name')) keywordValues.push(...getCommandNamedValues(commandName));
+        out.push({ kind, optional, delimiter, list, keywordValues, keywordTypes, allowsArbitraryValues });
         continue;
       }
 
@@ -101,33 +129,37 @@ function parseCommandMap(xmlText) {
           hasParameterTags = true;
           const pAttrs = parseAttributes(pm[1]);
           const parameterName = (pAttrs.name || '').trim();
-          if (parameterName === 'cd:key') {
+          const parameterKey = parameterName.toLowerCase();
+          if (parameterKey === 'cd:key') {
             allowsArbitraryKeys = true;
           }
-          if (parameterName && parameterName !== 'cd:key') {
+          if (parameterName && parameterKey !== 'cd:key') {
             parameterNames.push(parameterName);
-            if (!parameterTypes.has(parameterName)) {
-              parameterTypes.set(parameterName, []);
+            if (!parameterTypes.has(parameterKey)) {
+              parameterTypes.set(parameterKey, []);
             }
-            if (!parameterValues.has(parameterName)) {
-              parameterValues.set(parameterName, []);
+            if (!parameterValues.has(parameterKey)) {
+              parameterValues.set(parameterKey, []);
             }
           }
 
           const parameterBody = pm[2] || '';
           const cRe = /<cd:constant\b([^>]*)\/>/g;
           let cm;
+          let allowsFontSizeValues = false;
           while ((cm = cRe.exec(parameterBody)) !== null) {
             const cAttrs = parseAttributes(cm[1]);
             const explicitType = (cAttrs.type || '').trim();
-            if (explicitType && parameterName && parameterName !== 'cd:key') {
-              parameterTypes.get(parameterName).push(explicitType);
+            if (explicitType && parameterName && parameterKey !== 'cd:key') {
+              parameterTypes.get(parameterKey).push(explicitType);
+              allowsFontSizeValues ||= explicitType === 'cd:dimension' && category.toLowerCase() === 'fonts';
             }
             const value = (cAttrs.value || cAttrs.type || '').trim();
-            if (value && !value.startsWith('cd:') && parameterName && parameterName !== 'cd:key') {
-              parameterValues.get(parameterName).push(value);
+            if (value && !value.startsWith('cd:') && parameterName && parameterKey !== 'cd:key') {
+              parameterValues.get(parameterKey).push(value);
             }
           }
+          if (allowsFontSizeValues) parameterValues.get(parameterKey).push(...fontSizeValues);
         }
 
         out.push({ kind, optional, delimiter, list, parameterNames, parameterTypes, parameterValues, parameterSources, hasParameterTags, allowsArbitraryKeys });
@@ -137,7 +169,7 @@ function parseCommandMap(xmlText) {
       out.push({ kind, optional, delimiter, list });
     }
 
-    return out;
+    return out.map((spec, argumentPosition) => ({ ...spec, argumentPosition }));
   }
 
   /** Expands an XML sequence into the generated command name for one instance. */
@@ -272,13 +304,14 @@ function parseCommandMap(xmlText) {
     return score;
   }
 
-  function makeEnvironmentInsertText(startName, argumentSpecs) {
+  function makeEnvironmentInsertText(startName, argumentSpecs, isSectionDefinition = false) {
     const stopName = startName.startsWith('start') && startName.length > 5
       ? `stop${startName.slice(5)}`
       : `stop${startName}`;
 
-    const argumentSnippet = buildArgumentSnippet(argumentSpecs, 1);
-    return new vscode.SnippetString(`${startName}${argumentSnippet.text}\n\t$0\n\\${stopName}`);
+    const argumentSnippet = buildArgumentSnippet(argumentSpecs, 1, isSectionDefinition ? 'title' : '');
+    const indentation = isSectionDefinition ? '' : '\t';
+    return new vscode.SnippetString(`${startName}${argumentSnippet.text}\n${indentation}$0\n\\${stopName}`);
   }
 
   /** Returns valid positional forms for the command's optional arguments. */
@@ -336,53 +369,81 @@ function parseCommandMap(xmlText) {
     }
 
     const attrs = parseAttributes(openTag[0]);
-    const name = attrs.name;
+    const names = parseCommandNames(attrs.name);
     const type = attrs.type || '';
     const category = attrs.category || '';
     const isSectionDefinition = category.toLowerCase() === 'structure'
       && attrs.file === 'strc-sec.mkxl';
     const variant = attrs.variant || '';
     const requiredBracketCount = getRequiredBracketArgumentCount(block);
-    const argumentSpecs = parseArgumentSpecs(block);
-    if (!name) {
+    if (names.length === 0) {
       continue;
     }
 
-    const entry = ensureEntry(commandMap, name);
+    for (const name of names) {
+      const argumentSpecs = parseArgumentSpecs(block, name, category);
+      const entry = ensureEntry(commandMap, name);
 
-    const instances = [];
-    const instancesBlock = block.match(/<cd:instances\b[^>]*>[\s\S]*?<\/cd:instances>/);
-    if (instancesBlock) {
-      const iRe = /<cd:constant\b([^>]*)\/>/g;
-      let im;
-      while ((im = iRe.exec(instancesBlock[0])) !== null) {
-        const iAttrs = parseAttributes(im[1]);
-        const value = (iAttrs.value || '').trim();
-        if (value) {
-          instances.push(value);
+      const instances = [];
+      const instancesBlock = block.match(/<cd:instances\b[^>]*>[\s\S]*?<\/cd:instances>/);
+      if (instancesBlock) {
+        const iRe = /<cd:constant\b([^>]*)\/>/g;
+        let im;
+        while ((im = iRe.exec(instancesBlock[0])) !== null) {
+          const iAttrs = parseAttributes(im[1]);
+          const value = (iAttrs.value || '').trim();
+          if (value) {
+            instances.push(value);
+          }
         }
       }
-    }
 
-    if (type === 'environment') {
-      if (instances.length > 0) {
-        for (const [structureRank, instance] of instances.entries()) {
-          const generatedName = getGeneratedCommandName(block, instance);
-          const startName = `start${generatedName}`;
+      if (type === 'environment') {
+        if (instances.length > 0) {
+          for (const [structureRank, instance] of instances.entries()) {
+            const generatedName = getGeneratedCommandName(block, instance);
+            const startName = `start${generatedName}`;
+            if (isSectionDefinition) {
+              structureEnvironments.add(startName);
+            }
+            const metadata = {
+              ...attrs,
+              ...(isSectionDefinition && { structureRank }),
+              structureName: generatedName
+            };
+            registerCommandMetadata(startName, metadata);
+            registerCommandMetadata(`stop${generatedName}`, metadata);
+            const label = `\\${startName}`;
+            const item = {
+              kind: getCommandCompletionKind(attrs),
+              insertText: makeEnvironmentInsertText(startName, argumentSpecs, isSectionDefinition),
+              sortWeight: '00'
+            };
+
+            commandMap.set(startName, entry);
+            registerCompletion(label, item, {
+              category,
+              type,
+              variant,
+              requiredBracketCount,
+              argumentSpecs,
+              environmentStartName: startName,
+              isSectionDefinition
+            });
+            registerCommandArgumentSpecs(startName, argumentSpecs, variant);
+          }
+        } else {
+          const startName = name.startsWith('start') ? name : `start${name}`;
           if (isSectionDefinition) {
             structureEnvironments.add(startName);
           }
-          const metadata = {
-            ...attrs,
-            ...(isSectionDefinition && { structureRank }),
-            structureName: generatedName
-          };
-          registerCommandMetadata(startName, metadata);
-          registerCommandMetadata(`stop${generatedName}`, metadata);
+          const structureName = startName.replace(/^start/, '');
+          registerCommandMetadata(startName, { ...attrs, structureName });
+          registerCommandMetadata(`stop${structureName}`, { ...attrs, structureName });
           const label = `\\${startName}`;
           const item = {
             kind: getCommandCompletionKind(attrs),
-            insertText: makeEnvironmentInsertText(startName, argumentSpecs),
+            insertText: makeEnvironmentInsertText(startName, argumentSpecs, isSectionDefinition),
             sortWeight: '00'
           };
 
@@ -393,163 +454,140 @@ function parseCommandMap(xmlText) {
             variant,
             requiredBracketCount,
             argumentSpecs,
-            environmentStartName: startName
+            environmentStartName: startName,
+            isSectionDefinition
           });
           registerCommandArgumentSpecs(startName, argumentSpecs, variant);
         }
       } else {
-        const startName = name.startsWith('start') ? name : `start${name}`;
-        if (isSectionDefinition) {
-          structureEnvironments.add(startName);
-        }
-        const structureName = startName.replace(/^start/, '');
-        registerCommandMetadata(startName, { ...attrs, structureName });
-        registerCommandMetadata(`stop${structureName}`, { ...attrs, structureName });
-        const label = `\\${startName}`;
-        const item = {
+        registerCommandMetadata(name, attrs);
+        const insertText = makeCommandInsertText(name, argumentSpecs);
+
+        registerCompletion(`\\${name}`, {
           kind: getCommandCompletionKind(attrs),
-          insertText: makeEnvironmentInsertText(startName, argumentSpecs),
-          sortWeight: '00'
-        };
-
-        commandMap.set(startName, entry);
-        registerCompletion(label, item, {
-          category,
-          type,
-          variant,
-          requiredBracketCount,
-          argumentSpecs,
-          environmentStartName: startName
-        });
-        registerCommandArgumentSpecs(startName, argumentSpecs, variant);
-      }
-    } else {
-      registerCommandMetadata(name, attrs);
-      const insertText = makeCommandInsertText(name, argumentSpecs);
-
-      registerCompletion(`\\${name}`, {
-        kind: getCommandCompletionKind(attrs),
-        insertText,
-        sortWeight: '10'
-      }, {
-        category,
-        type,
-        variant,
-        requiredBracketCount,
-        argumentSpecs,
-        commandName: name
-      });
-      registerCommandArgumentSpecs(name, argumentSpecs, variant);
-
-      for (const [structureRank, instance] of instances.entries()) {
-        const generatedName = getGeneratedCommandName(block, instance);
-        registerCommandMetadata(generatedName, {
-          ...attrs,
-          ...(isSectionDefinition && { structureRank }),
-          structureName: generatedName
-        });
-        const instanceInsertText = makeCommandInsertText(generatedName, argumentSpecs);
-
-        registerCompletion(`\\${generatedName}`, {
-          kind: getCommandCompletionKind(attrs),
-          insertText: instanceInsertText,
-          sortWeight: '11'
+          insertText,
+          sortWeight: '10'
         }, {
           category,
           type,
           variant,
           requiredBracketCount,
           argumentSpecs,
-          commandName: generatedName
+          commandName: name
         });
-        registerCommandArgumentSpecs(generatedName, argumentSpecs, variant);
-      }
-    }
+        registerCommandArgumentSpecs(name, argumentSpecs, variant);
 
-    const keywordBlocks = block.match(/<cd:keywords\b[^>]*>[\s\S]*?<\/cd:keywords>/g) || [];
-    for (const keywordBlock of keywordBlocks) {
-      const cRe = /<cd:constant\b([^>]*)\/>/g;
-      let cm;
-      while ((cm = cRe.exec(keywordBlock)) !== null) {
-        const cAttrs = parseAttributes(cm[1]);
-        const value = (cAttrs.value || cAttrs.type || '').trim();
-        if (!value || value.startsWith('cd:')) {
-          continue;
+        for (const [structureRank, instance] of instances.entries()) {
+          const generatedName = getGeneratedCommandName(block, instance);
+          registerCommandMetadata(generatedName, {
+            ...attrs,
+            ...(isSectionDefinition && { structureRank }),
+            structureName: generatedName
+          });
+          const instanceInsertText = makeCommandInsertText(generatedName, argumentSpecs);
+
+          registerCompletion(`\\${generatedName}`, {
+            kind: getCommandCompletionKind(attrs),
+            insertText: instanceInsertText,
+            sortWeight: '11'
+          }, {
+            category,
+            type,
+            variant,
+            requiredBracketCount,
+            argumentSpecs,
+            commandName: generatedName
+          });
+          registerCommandArgumentSpecs(generatedName, argumentSpecs, variant);
         }
-        entry.keywords.add(value);
-        if ((cAttrs.default || '').trim().toLowerCase() === 'yes') {
-          if (!entry.parameterValueDefaults.has(name)) {
-            entry.parameterValueDefaults.set(name, new Set());
+      }
+
+      const keywordBlocks = block.match(/<cd:keywords\b[^>]*>[\s\S]*?<\/cd:keywords>/g) || [];
+      for (const keywordBlock of keywordBlocks) {
+        const cRe = /<cd:constant\b([^>]*)\/>/g;
+        let cm;
+        while ((cm = cRe.exec(keywordBlock)) !== null) {
+          const cAttrs = parseAttributes(cm[1]);
+          const value = (cAttrs.value || cAttrs.type || '').trim();
+          if (!value || value.startsWith('cd:')) {
+            continue;
           }
-          entry.parameterValueDefaults.get(name).add(value);
+          entry.keywords.add(value);
+          if ((cAttrs.default || '').trim().toLowerCase() === 'yes') {
+            if (!entry.parameterValueDefaults.has(name)) {
+              entry.parameterValueDefaults.set(name, new Set());
+            }
+            entry.parameterValueDefaults.get(name).add(value);
+          }
+        }
+
+        for (const refName of getReferenceNames(keywordBlock)) {
+          entry.inherits.add(refName);
         }
       }
 
-      for (const refName of getReferenceNames(keywordBlock)) {
-        entry.inherits.add(refName);
-      }
-    }
-
-    const assignmentBlocks = block.match(/<cd:assignments\b[^>]*>[\s\S]*?<\/cd:assignments>/g) || [];
-    for (const assignmentBlock of assignmentBlocks) {
-      const withoutParams = assignmentBlock.replace(/<cd:parameter\b[^>]*>[\s\S]*?<\/cd:parameter>/g, '');
-      for (const refName of getReferenceNames(withoutParams)) {
-        entry.inherits.add(refName);
-      }
-    }
-
-    const pRe = /<cd:parameter\b([^>]*)>/g;
-    let pm;
-    while ((pm = pRe.exec(block)) !== null) {
-      const pAttrs = parseAttributes(pm[1]);
-      const pName = (pAttrs.name || '').trim();
-      if (!pName || pName === 'cd:key') {
-        continue;
-      }
-
-      entry.parameters.add(pName);
-      if (!entry.parameterValues.has(pName)) {
-        entry.parameterValues.set(pName, new Set());
-      }
-      if (!entry.parameterTypes.has(pName)) {
-        entry.parameterTypes.set(pName, new Set());
-      }
-      if (!entry.parameterValueDefaults.has(pName)) {
-        entry.parameterValueDefaults.set(pName, new Set());
-      }
-
-      const bodyStart = pm.index + pm[0].length;
-      const bodyEnd = block.indexOf('</cd:parameter>', bodyStart);
-      if (bodyEnd <= bodyStart) {
-        continue;
-      }
-
-      const parameterBody = block.slice(bodyStart, bodyEnd);
-      const pcRe = /<cd:constant\b([^>]*)\/>/g;
-      let pcm;
-      while ((pcm = pcRe.exec(parameterBody)) !== null) {
-        const cAttrs = parseAttributes(pcm[1]);
-        const value = (cAttrs.value || cAttrs.type || '').trim();
-        const explicitType = (cAttrs.type || '').trim();
-        if (explicitType) {
-          entry.parameterTypes.get(pName).add(explicitType);
+      const assignmentBlocks = block.match(/<cd:assignments\b[^>]*>[\s\S]*?<\/cd:assignments>/g) || [];
+      for (const assignmentBlock of assignmentBlocks) {
+        const withoutParams = assignmentBlock.replace(/<cd:parameter\b[^>]*>[\s\S]*?<\/cd:parameter>/g, '');
+        for (const refName of getReferenceNames(withoutParams)) {
+          entry.inherits.add(refName);
         }
-        if (!value || value.startsWith('cd:')) {
+      }
+
+      const pRe = /<cd:parameter\b([^>]*)>/g;
+      let pm;
+      while ((pm = pRe.exec(block)) !== null) {
+        const pAttrs = parseAttributes(pm[1]);
+        const pName = (pAttrs.name || '').trim();
+        const pKey = pName.toLowerCase();
+        if (!pName || pKey === 'cd:key') {
           continue;
         }
-        entry.parameterValues.get(pName).add(value);
-        if ((cAttrs.default || '').trim().toLowerCase() === 'yes') {
-          entry.parameterValueDefaults.get(pName).add(value);
+
+        entry.parameters.add(pName);
+        if (!entry.parameterValues.has(pKey)) {
+          entry.parameterValues.set(pKey, new Set());
+        }
+        if (!entry.parameterTypes.has(pKey)) {
+          entry.parameterTypes.set(pKey, new Set());
+        }
+        if (!entry.parameterValueDefaults.has(pKey)) {
+          entry.parameterValueDefaults.set(pKey, new Set());
+        }
+
+        const bodyStart = pm.index + pm[0].length;
+        const bodyEnd = block.indexOf('</cd:parameter>', bodyStart);
+        if (bodyEnd <= bodyStart) {
+          continue;
+        }
+
+        const parameterBody = block.slice(bodyStart, bodyEnd);
+        const pcRe = /<cd:constant\b([^>]*)\/>/g;
+        let pcm;
+        while ((pcm = pcRe.exec(parameterBody)) !== null) {
+          const cAttrs = parseAttributes(pcm[1]);
+          const value = (cAttrs.value || cAttrs.type || '').trim();
+          const explicitType = (cAttrs.type || '').trim();
+          if (explicitType) {
+            entry.parameterTypes.get(pKey).add(explicitType);
+          }
+          if (!value || value.startsWith('cd:')) {
+            continue;
+          }
+          entry.parameterValues.get(pKey).add(value);
+          if ((cAttrs.default || '').trim().toLowerCase() === 'yes') {
+            entry.parameterValueDefaults.get(pKey).add(value);
+          }
+        }
+
+        if (!entry.parameterSources.has(pKey)) {
+          entry.parameterSources.set(pKey, new Set());
+        }
+        for (const refName of getReferenceNames(parameterBody)) {
+          entry.parameterSources.get(pKey).add(refName);
         }
       }
-
-      if (!entry.parameterSources.has(pName)) {
-        entry.parameterSources.set(pName, new Set());
       }
-      for (const refName of getReferenceNames(parameterBody)) {
-        entry.parameterSources.get(pName).add(refName);
-      }
-    }
   }
 
   const resolved = new Map();
@@ -678,7 +716,7 @@ function parseCommandMap(xmlText) {
         const commandName = meta.commandName || label.slice(1);
         const insertText = argumentSpecs
           ? (meta.type === 'environment'
-            ? makeEnvironmentInsertText(commandName, argumentSpecs)
+            ? makeEnvironmentInsertText(commandName, argumentSpecs, meta.isSectionDefinition)
             : makeCommandInsertText(commandName, argumentSpecs))
           : candidate.insertText;
         const expanded = { ...candidate, insertText, meta };

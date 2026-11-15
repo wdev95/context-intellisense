@@ -1,5 +1,13 @@
 # Node dependencies
 node_modules/
+/out/
+/vendor/context-equation/target/
+/media/context-equation-editor.js
+/media/context-equation-wasm.js
+/media/context-equation-wasm.d.ts
+/media/context-equation-wasm_bg.wasm
+/media/context-equation-wasm_bg.wasm.d.ts
+/media/context-equation-node/
 
 # VS Code extension artifacts
 *.vsix

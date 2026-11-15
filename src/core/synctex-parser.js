@@ -21,7 +21,7 @@ function parseSyncTexEditResult(output) {
     const line = rawLine.trim();
     const input = /^Input:\s*(?:\d+:)?(.+)$/i.exec(line);
     if (input) {
-      if (current && current.line !== undefined) {
+      if (current && current.line > 0) {
         locations.push(current);
       }
       current = { filePath: input[1].trim(), line: undefined, column: 0 };
@@ -32,7 +32,7 @@ function parseSyncTexEditResult(output) {
     }
     const sourceLine = /^Line:\s*(-?\d+)$/i.exec(line);
     if (sourceLine) {
-      current.line = Math.max(Number(sourceLine[1]), 1);
+      current.line = Number(sourceLine[1]);
       continue;
     }
     const column = /^Column:\s*(-?\d+)$/i.exec(line);
@@ -40,7 +40,7 @@ function parseSyncTexEditResult(output) {
       current.column = Math.max(Number(column[1]), 0);
     }
   }
-  if (current && current.line !== undefined) {
+  if (current && current.line > 0) {
     locations.push(current);
   }
   return locations.length > 0 ? locations[0] : null;
@@ -55,9 +55,9 @@ function parseMtxSyncTexFindResult(output) {
 /** Parses the ConTeXt mtx-synctex inverse result. */
 function parseMtxSyncTexReportResult(output) {
   const match = /^\s*["'](.+)["']\s+(-?\d+)\s+(-?\d+)\s*$/m.exec(String(output || ''));
-  return match ? {
+  return match && Number(match[2]) > 0 ? {
     filePath: match[1].trim(),
-    line: Math.max(Number(match[2]), 1),
+    line: Number(match[2]),
     column: Math.max(Number(match[3]), 0)
   } : null;
 }

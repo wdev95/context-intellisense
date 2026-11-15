@@ -3,7 +3,7 @@
   "displayName": "ConTeXt IntelliSense",
   "description": "ConTeXt syntax highlighting plus context-aware completions with command signatures and key-value hints.",
   "icon": "icon.png",
-  "version": "1.1.8",
+  "version": "1.2.151",
   "publisher": "wdev",
   "repository": {
     "type": "git",
@@ -11,22 +11,62 @@
   },
   "scripts": {
     "build-vsix": "node ./build-vsix.js",
+    "build-context-equation": "node ./scripts/build-context-equation.js",
     "install-vsix": "node ./install-vsix.js",
     "install-vsix:insiders": "node ./install-vsix.js --insiders"
   },
   "engines": {
-    "vscode": "^1.80.0"
+    "vscode": "^1.106.0"
   },
   "activationEvents": [
     "onStartupFinished",
-    "onLanguage:context-tex"
+    "onLanguage:context-tex",
+    "onView:contextIntellisense.settingsView",
+    "onView:contextIntellisense.equationEditor"
   ],
   "main": "./extension.js",
   "categories": [
     "Programming Languages"
   ],
   "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "contextIntellisense",
+          "title": "ConTeXt",
+          "icon": "images/context-intellisense.svg"
+        }
+      ],
+      "secondarySidebar": [
+        {
+          "id": "contextIntellisenseEquations",
+          "title": "Equation",
+          "icon": "$(symbol-operator)"
+        }
+      ]
+    },
+    "views": {
+      "contextIntellisense": [
+        {
+          "id": "contextIntellisense.settingsView",
+          "name": "Settings"
+        }
+      ],
+      "contextIntellisenseEquations": [
+        {
+          "id": "contextIntellisense.equationEditor",
+          "name": "Equation",
+          "type": "webview",
+          "when": "contextIntellisense.equationEditorTriggered && config.contextIntellisense.math.editor.enabled"
+        }
+      ]
+    },
     "commands": [
+      {
+        "command": "contextIntellisense.openMathEditor",
+        "title": "Open Equation Editor",
+        "icon": "$(symbol-operator)"
+      },
       {
         "command": "contextIntellisense.configureTexRootPath",
         "title": "ConTeXt IntelliSense: Configure TeX Root Path"
@@ -54,18 +94,77 @@
         "icon": "$(run-all)"
       },
       {
+        "command": "contextIntellisense.chooseSettingsTarget",
+        "title": "ConTeXt IntelliSense: Choose Settings Target",
+        "icon": "$(settings-gear)"
+      },
+      {
+        "command": "contextIntellisense.addFontSize",
+        "title": "ConTeXt IntelliSense: Add Font Size",
+        "icon": "$(add)"
+      },
+      {
+        "command": "contextIntellisense.editFontSize",
+        "title": "Edit Font Size Command",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "contextIntellisense.removeFontSize",
+        "title": "Remove Font Size",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "contextIntellisense.resetSetting",
+        "title": "Reset to Default",
+        "icon": "$(discard)"
+      },
+      {
+        "command": "contextIntellisense.editSetting",
+        "title": "Edit Setting",
+        "icon": "$(edit)"
+      },
+      {
         "command": "contextIntellisense.showPdfForCurrentFile",
         "title": "Show PDF",
         "icon": "$(file-pdf)"
       },
       {
+        "command": "contextIntellisense.formatSelectionBold",
+        "title": "Bold",
+        "icon": "$(bold)"
+      },
+      {
+        "command": "contextIntellisense.formatSelectionEmphasize",
+        "title": "Emphasize",
+        "icon": "$(italic)"
+      },
+      {
+        "command": "contextIntellisense.formatSelectionFontSize",
+        "title": "Font Size",
+        "icon": "$(text-size)"
+      },
+      {
+        "command": "contextIntellisense.formatSelectionColor",
+        "title": "Text Color",
+        "icon": "$(symbol-color)"
+      },
+      {
+        "command": "contextIntellisense.formatSelectionHighlight",
+        "title": "Highlight",
+        "icon": "$(paintcan)"
+      },
+      {
         "command": "contextIntellisense.synctexForward",
-        "title": "ConTeXt IntelliSense: SyncTeX Forward"
+        "title": "Show in PDF"
       },
       {
         "command": "contextIntellisense.clearWorkspace",
         "title": "Clear Workspace",
         "icon": "$(trash)"
+      },
+      {
+        "command": "contextIntellisense.clearIgnoredWarnings",
+        "title": "ConTeXt IntelliSense: Clear Ignored Warning Rules"
       },
       {
         "command": "contextIntellisense.hideTemporaryFiles",
@@ -94,11 +193,35 @@
         "when": "editorTextFocus && (editorLangId == context-tex || editorLangId == context-internal-tex) && !suggestWidgetVisible && !inSnippetMode"
       },
       {
+        "command": "contextIntellisense.formatSelectionBold",
+        "key": "ctrl+b",
+        "mac": "cmd+b",
+        "when": "editorTextFocus && editorHasSelection && (editorLangId == context-tex || editorLangId == context-internal-tex)"
+      },
+      {
+        "command": "contextIntellisense.formatSelectionEmphasize",
+        "key": "ctrl+i",
+        "mac": "cmd+i",
+        "when": "editorTextFocus && editorHasSelection && (editorLangId == context-tex || editorLangId == context-internal-tex)"
+      },
+      {
+        "command": "contextIntellisense.openMathEditor",
+        "key": "ctrl+alt+m",
+        "mac": "cmd+alt+m",
+        "when": "editorTextFocus && (editorLangId == context-tex || editorLangId == context-internal-tex) && config.contextIntellisense.math.editor.enabled"
+      },
+      {
+        "command": "contextIntellisense.synctexForward",
+        "key": "ctrl+alt+enter",
+        "when": "editorTextFocus && (editorLangId == context-tex || editorLangId == context-internal-tex) && config.contextIntellisense.synctex.mode != off && !suggestWidgetVisible && !inSnippetMode"
+      },
+      {
         "command": "contextIntellisense.nextSnippetArgument",
         "key": "tab",
         "when": "editorTextFocus && editorLangId == context-tex && inSnippetMode"
       }
     ],
+    "submenus": [],
     "menus": {
       "explorer/context": [
         {
@@ -116,12 +239,80 @@
         {
           "command": "contextIntellisense.hideTemporaryFiles",
           "group": "navigation@5",
-          "when": "view == explorer && !config.contextIntellisense.hideTemporaryFiles"
+          "when": "view == explorer && !config.contextIntellisense.explorer.hideTemporaryFiles"
         },
         {
           "command": "contextIntellisense.showTemporaryFiles",
           "group": "navigation@5",
-          "when": "view == explorer && config.contextIntellisense.hideTemporaryFiles"
+          "when": "view == explorer && config.contextIntellisense.explorer.hideTemporaryFiles"
+        },
+        {
+          "command": "contextIntellisense.chooseSettingsTarget",
+          "group": "navigation@1",
+          "when": "view == contextIntellisense.settingsView"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "contextIntellisense.openMathEditor",
+          "when": "config.contextIntellisense.math.editor.enabled"
+        },
+        {
+          "command": "contextIntellisense.formatSelectionFontSize",
+          "when": "false"
+        },
+        {
+          "command": "contextIntellisense.editFontSize",
+          "when": "false"
+        },
+        {
+          "command": "contextIntellisense.removeFontSize",
+          "when": "false"
+        },
+        {
+          "command": "contextIntellisense.resetSetting",
+          "when": "false"
+        },
+        {
+          "command": "contextIntellisense.editSetting",
+          "when": "false"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "contextIntellisense.addFontSize",
+          "group": "inline@1",
+          "when": "view == contextIntellisense.settingsView && viewItem == contextIntellisense.fontSizeCollection"
+        },
+        {
+          "command": "contextIntellisense.editSetting",
+          "group": "inline@1",
+          "when": "view == contextIntellisense.settingsView && viewItem == contextIntellisense.setting"
+        },
+        {
+          "command": "contextIntellisense.editFontSize",
+          "group": "inline@1",
+          "when": "view == contextIntellisense.settingsView && viewItem == contextIntellisense.fontSizeEntry"
+        },
+        {
+          "command": "contextIntellisense.removeFontSize",
+          "group": "inline@3",
+          "when": "view == contextIntellisense.settingsView && viewItem == contextIntellisense.fontSizeEntry"
+        },
+        {
+          "command": "contextIntellisense.resetSetting",
+          "group": "inline@9",
+          "when": "view == contextIntellisense.settingsView && viewItem == contextIntellisense.setting"
+        },
+        {
+          "command": "contextIntellisense.resetSetting",
+          "group": "inline@9",
+          "when": "view == contextIntellisense.settingsView && viewItem == contextIntellisense.toggleSetting"
+        },
+        {
+          "command": "contextIntellisense.resetSetting",
+          "group": "inline@9",
+          "when": "view == contextIntellisense.settingsView && viewItem == contextIntellisense.fontSizeCollection"
         }
       ],
       "editor/title": [
@@ -132,40 +323,95 @@
         },
         {
           "command": "contextIntellisense.compileMainFile",
-          "group": "navigation@11",
+          "group": "navigation@20",
           "when": "resourceScheme == file && resourceLangId == context-tex && contextIntellisense.hasMainFile"
         },
         {
-          "command": "contextIntellisense.showPdfForCurrentFile",
-          "group": "navigation@12",
-          "when": "resourceScheme == file && resourceLangId == context-tex && contextIntellisense.hasPdfForActiveFile"
+          "command": "contextIntellisense.formatSelectionBold",
+          "group": "navigation@1",
+          "when": "editorHasSelection && (resourceLangId == context-tex || resourceLangId == context-internal-tex) && config.contextIntellisense.fontSwitches.buttons.bold"
         },
         {
-          "command": "contextIntellisense.clearWorkspace",
-          "group": "navigation@13",
-          "when": "resourceScheme == file && resourceLangId == context-tex"
+          "command": "contextIntellisense.formatSelectionEmphasize",
+          "group": "navigation@2",
+          "when": "editorHasSelection && (resourceLangId == context-tex || resourceLangId == context-internal-tex) && config.contextIntellisense.fontSwitches.buttons.emphasize"
+        },
+        {
+          "command": "contextIntellisense.formatSelectionColor",
+          "group": "navigation@3",
+          "when": "editorHasSelection && (resourceLangId == context-tex || resourceLangId == context-internal-tex) && config.contextIntellisense.fontSwitches.buttons.color"
+        },
+        {
+          "command": "contextIntellisense.formatSelectionFontSize",
+          "group": "navigation@4",
+          "when": "editorHasSelection && (resourceLangId == context-tex || resourceLangId == context-internal-tex) && config.contextIntellisense.fontSwitches.buttons.fontSize"
+        },
+        {
+          "command": "contextIntellisense.formatSelectionHighlight",
+          "group": "navigation@5",
+          "when": "editorHasSelection && (resourceLangId == context-tex || resourceLangId == context-internal-tex) && config.contextIntellisense.fontSwitches.buttons.highlight"
+        },
+        {
+          "command": "contextIntellisense.openMathEditor",
+          "group": "navigation@6",
+          "when": "contextIntellisense.inEquation && config.contextIntellisense.math.editor.enabled"
         }
       ],
       "editor/context": [
         {
+          "command": "contextIntellisense.formatSelectionBold",
+          "group": "navigation@1",
+          "when": "editorHasSelection && (editorLangId == context-tex || editorLangId == context-internal-tex) && config.contextIntellisense.fontSwitches.buttons.bold"
+        },
+        {
+          "command": "contextIntellisense.formatSelectionEmphasize",
+          "group": "navigation@2",
+          "when": "editorHasSelection && (editorLangId == context-tex || editorLangId == context-internal-tex) && config.contextIntellisense.fontSwitches.buttons.emphasize"
+        },
+        {
+          "command": "contextIntellisense.formatSelectionColor",
+          "group": "navigation@3",
+          "when": "editorHasSelection && (editorLangId == context-tex || editorLangId == context-internal-tex) && config.contextIntellisense.fontSwitches.buttons.color"
+        },
+        {
+          "command": "contextIntellisense.formatSelectionFontSize",
+          "group": "navigation@4",
+          "when": "editorHasSelection && (editorLangId == context-tex || editorLangId == context-internal-tex) && config.contextIntellisense.fontSwitches.buttons.fontSize"
+        },
+        {
+          "command": "contextIntellisense.formatSelectionHighlight",
+          "group": "navigation@5",
+          "when": "editorHasSelection && (editorLangId == context-tex || editorLangId == context-internal-tex) && config.contextIntellisense.fontSwitches.buttons.highlight"
+        },
+        {
           "command": "contextIntellisense.compileCurrentFile",
-          "group": "navigation@10",
+          "group": "0_contextIntellisense@1",
           "when": "editorLangId == context-tex || editorLangId == context-internal-tex"
         },
         {
           "command": "contextIntellisense.compileMainFile",
-          "group": "navigation@11",
+          "group": "0_contextIntellisense@2",
           "when": "(editorLangId == context-tex || editorLangId == context-internal-tex) && contextIntellisense.hasMainFile"
         },
         {
           "command": "editor.action.commentLine",
-          "group": "1_modification",
+          "group": "0_contextIntellisense@6",
           "when": "editorLangId == context-tex || editorLangId == context-internal-tex"
         },
         {
           "command": "contextIntellisense.synctexForward",
-          "group": "navigation@20",
-          "when": "resourceLangId == context-tex && config.contextIntellisense.synctex == rightclick"
+          "group": "0_contextIntellisense@7",
+          "when": "(editorLangId == context-tex || editorLangId == context-internal-tex) && config.contextIntellisense.synctex.mode != off"
+        },
+        {
+          "command": "contextIntellisense.showPdfForCurrentFile",
+          "group": "0_contextIntellisense@4",
+          "when": "editorLangId == context-tex && contextIntellisense.hasPdfForActiveFile"
+        },
+        {
+          "command": "contextIntellisense.clearWorkspace",
+          "group": "0_contextIntellisense@5",
+          "when": "editorLangId == context-tex || editorLangId == context-internal-tex"
         }
       ]
     },
@@ -524,77 +770,248 @@
       }
     ],
     "configurationDefaults": {
-      "[context-tex][context-internal-tex]": {
-        "editor.wordSeparators": "`~!@#$%^&*()-=+[{]}\\\\|;'\",.<>/?"
+      "workbench.editorAssociations": {
+        "*.pdf": "academicPdfViewer.pdf"
+      },
+      "workbench.editor.autoLockGroups": {
+        "academicPdfViewer.pdf": true
+      },
+      "[context-tex]": {
+        "editor.wordSeparators": "`~!@#$%^&*()-=+[{]}\\\\|;'\",.<>/?",
+        "editor.linkedEditing": true,
+        "editor.selectionHighlight": false,
+        "editor.occurrencesHighlight": "off"
+      },
+      "[context-internal-tex]": {
+        "editor.wordSeparators": "`~!@#$%^&*()-=+[{]}\\\\|;'\",.<>/?",
+        "editor.linkedEditing": true,
+        "editor.selectionHighlight": false,
+        "editor.occurrencesHighlight": "off"
       }
     },
-    "configuration": {
-      "title": "ConTeXt IntelliSense",
-      "properties": {
-        "contextIntellisense.texRootPath": {
-          "type": "string",
-          "default": "",
-          "scope": "machine",
-          "description": "Absolute path to the root of your ConTeXt / TeX installation. The extension resolves i-context.xml and the context executable automatically below this folder."
+    "configuration": [
+      {
+        "title": "Distribution",
+        "order": 1,
+        "properties": {
+          "contextIntellisense.distribution.texRootPath": {
+            "type": "string",
+            "default": "",
+            "scope": "machine",
+            "description": "Absolute path to the root of your ConTeXt / TeX installation. The extension resolves i-context.xml and the context executable automatically below this folder."
+          }
         },
-        "contextIntellisense.mainFilePath": {
-          "type": "string",
-          "default": "",
-          "scope": "resource",
-          "description": "Workspace-relative .tex file that should be compiled from the 'Compile Main' command."
+        "id": "contextIntellisense.distribution"
+      },
+      {
+        "title": "Compilation & PDF",
+        "order": 2,
+        "properties": {
+          "contextIntellisense.compilation.mainFilePath": {
+            "type": "string",
+            "default": "",
+            "scope": "resource",
+            "description": "Workspace-relative .tex file that should be compiled from the 'Compile Main' command."
+          },
+          "contextIntellisense.compilation.openPdfAfterCompile": {
+            "type": "boolean",
+            "default": true,
+            "description": "Open the generated PDF automatically after a successful compile. Uses Academic PDF Viewer (ovolab-veritas.academic-pdf-viewer) when installed, then your default vs code pdf viewer, then your system's default pdf viewer."
+          }
         },
-        "contextIntellisense.openPdfAfterCompile": {
-          "type": "boolean",
-          "default": true,
-          "description": "Open the generated PDF automatically after a successful compile. Uses Academic PDF Viewer (ovolab-veritas.academic-pdf-viewer) when installed, then your default vs code pdf viewer, then your system's default pdf viewer."
+        "id": "contextIntellisense.compilation"
+      },
+      {
+        "title": "Explorer",
+        "order": 3,
+        "properties": {
+          "contextIntellisense.explorer.hideTemporaryFiles": {
+            "type": "boolean",
+            "default": false,
+            "scope": "window",
+            "description": "Hide files that Clear Workspace can delete from the Explorer. This manages matching entries in workspace files.exclude settings."
+          }
         },
-        "contextIntellisense.hideTemporaryFiles": {
-          "type": "boolean",
-          "default": false,
-          "scope": "window",
-          "description": "Hide files that Clear Workspace can delete from the Explorer. This manages matching entries in workspace files.exclude settings."
+        "id": "contextIntellisense.explorer"
+      },
+      {
+        "title": "SyncTeX",
+        "order": 4,
+        "properties": {
+          "contextIntellisense.synctex.mode": {
+            "type": "string",
+            "enum": [
+              "off",
+              "doubleclick",
+              "rightclick"
+            ],
+            "enumDescriptions": [
+              "Disable both forward and inverse SyncTeX.",
+              "Run forward SyncTeX after a double-click selection; the editor context menu remains available.",
+              "Disable automatic double-click search and use the editor context menu."
+            ],
+            "default": "doubleclick",
+            "scope": "window",
+            "description": "Selects automatic forward search behavior; Show in PDF remains available in the editor context menu unless SyncTeX is off."
+          },
+          "contextIntellisense.synctex.viewerMode": {
+            "type": "string",
+            "enum": [
+              "bridge",
+              "API"
+            ],
+            "enumDescriptions": [
+              "Use the Academic PDF Viewer's built-in SyncTeX bridge.",
+              "Use the public Academic PDF Viewer API and ConTeXt IntelliSense SyncTeX integration."
+            ],
+            "default": "API",
+            "scope": "window",
+            "description": "Selects how ConTeXt IntelliSense integrates with Academic PDF Viewer."
+          }
         },
-        "contextIntellisense.synctex": {
-          "type": "string",
-          "enum": [
-            "off",
-            "doubleclick",
-            "rightclick"
-          ],
-          "enumDescriptions": [
-            "Disable both forward and inverse SyncTeX.",
-            "Run forward SyncTeX after a double-click selection.",
-            "Run forward SyncTeX from the editor context menu."
-          ],
-          "default": "doubleclick",
-          "scope": "window",
-          "description": "Selects how SyncTeX forward search is triggered from a ConTeXt editor."
+        "id": "contextIntellisense.synctex"
+      },
+      {
+        "title": "Math",
+        "order": 5,
+        "properties": {
+          "contextIntellisense.math.hover.enabled": {
+            "type": "boolean",
+            "default": true,
+            "scope": "window",
+            "description": "Show a rendered ConTeXt equation when hovering over its source."
+          },
+          "contextIntellisense.math.editor.enabled": {
+            "type": "boolean",
+            "default": true,
+            "scope": "window",
+            "description": "Enable the Equation panel and editor toolbar button."
+          }
         },
-        "contextIntellisense.synctexmode": {
-          "type": "string",
-          "enum": [
-            "bridge",
-            "API"
-          ],
-          "enumDescriptions": [
-            "Use the Academic PDF Viewer's built-in SyncTeX bridge.",
-            "Use the public Academic PDF Viewer API and ConTeXt IntelliSense SyncTeX integration."
-          ],
-          "default": "API",
-          "scope": "window",
-          "description": "Selects how ConTeXt IntelliSense integrates with Academic PDF Viewer."
-        }
+        "id": "contextIntellisense.math"
+      },
+      {
+        "title": "Font Switches",
+        "order": 6,
+        "properties": {
+          "contextIntellisense.fontSwitches.bold": {
+            "type": "string",
+            "default": "\\bold{${text}}",
+            "description": "Template for bold formatting. Use ${text} as the selected-text placeholder."
+          },
+          "contextIntellisense.fontSwitches.buttons.bold": {
+            "type": "boolean",
+            "default": true,
+            "description": "Show the Bold button in the editor toolbar and context menu."
+          },
+          "contextIntellisense.fontSwitches.emphasize": {
+            "type": "string",
+            "default": "\\emph{${text}}",
+            "description": "Template for emphasized formatting. Use ${text} as the selected-text placeholder."
+          },
+          "contextIntellisense.fontSwitches.buttons.emphasize": {
+            "type": "boolean",
+            "default": true,
+            "description": "Show the Emphasize button in the editor toolbar and context menu."
+          },
+          "contextIntellisense.fontSwitches.fontSizes": {
+            "type": "object",
+            "default": {
+              "xx": "{\\tfxx ${text}}",
+              "x": "{\\tfx ${text}}",
+              "normal": "{\\tf ${text}}",
+              "a": "{\\tfa ${text}}",
+              "b": "{\\tfb ${text}}",
+              "c": "{\\tfc ${text}}",
+              "d": "{\\tfd ${text}}"
+            },
+            "additionalProperties": {
+              "type": "string",
+              "description": "Template for this font size. Use ${text} as the selected-text placeholder."
+            },
+            "description": "Map each font-size name to its ConTeXt formatting template. Custom names appear in the Font Size list."
+          },
+          "contextIntellisense.fontSwitches.color": {
+            "type": "string",
+            "default": "\\color[${color}]{${text}}",
+            "description": "Template for color formatting. Use ${color} for the chosen color and ${text} for the selected text."
+          },
+          "contextIntellisense.fontSwitches.buttons.color": {
+            "type": "boolean",
+            "default": true,
+            "description": "Show the Text Color button in the editor toolbar and context menu."
+          },
+          "contextIntellisense.fontSwitches.buttons.fontSize": {
+            "type": "boolean",
+            "default": true,
+            "description": "Show the Font Size button in the editor toolbar and context menu."
+          },
+          "contextIntellisense.fontSwitches.buttons.highlight": {
+            "type": "boolean",
+            "default": true,
+            "description": "Show the Highlight button in the editor toolbar and context menu."
+          },
+          "contextIntellisense.fontSwitches.fontSizeXx": {
+            "type": "string",
+            "default": "{\\tfxx ${text}}",
+            "description": "Template for the ConTeXt xx font size. Use ${text} as the selected-text placeholder.",
+            "deprecationMessage": "Use the Font Sizes table in the Font Switches settings instead."
+          },
+          "contextIntellisense.fontSwitches.fontSizeX": {
+            "type": "string",
+            "default": "{\\tfx ${text}}",
+            "description": "Template for the ConTeXt x font size. Use ${text} as the selected-text placeholder.",
+            "deprecationMessage": "Use the Font Sizes table in the Font Switches settings instead."
+          },
+          "contextIntellisense.fontSwitches.fontSizeNormal": {
+            "type": "string",
+            "default": "{\\tf ${text}}",
+            "description": "Template for the normal ConTeXt font size. Use ${text} as the selected-text placeholder.",
+            "deprecationMessage": "Use the Font Sizes table in the Font Switches settings instead."
+          },
+          "contextIntellisense.fontSwitches.fontSizeA": {
+            "type": "string",
+            "default": "{\\tfa ${text}}",
+            "description": "Template for the ConTeXt a font size. Use ${text} as the selected-text placeholder.",
+            "deprecationMessage": "Use the Font Sizes table in the Font Switches settings instead."
+          },
+          "contextIntellisense.fontSwitches.fontSizeB": {
+            "type": "string",
+            "default": "{\\tfb ${text}}",
+            "description": "Template for the ConTeXt b font size. Use ${text} as the selected-text placeholder.",
+            "deprecationMessage": "Use the Font Sizes table in the Font Switches settings instead."
+          },
+          "contextIntellisense.fontSwitches.fontSizeC": {
+            "type": "string",
+            "default": "{\\tfc ${text}}",
+            "description": "Template for the ConTeXt c font size. Use ${text} as the selected-text placeholder.",
+            "deprecationMessage": "Use the Font Sizes table in the Font Switches settings instead."
+          },
+          "contextIntellisense.fontSwitches.fontSizeD": {
+            "type": "string",
+            "default": "{\\tfd ${text}}",
+            "description": "Template for the ConTeXt d font size. Use ${text} as the selected-text placeholder.",
+            "deprecationMessage": "Use the Font Sizes table in the Font Switches settings instead."
+          }
+        },
+        "id": "contextIntellisense.fontSwitches"
       }
-    }
+    ]
   },
   "license": "MIT",
   "files": [
     "extension.js",
     "src/**",
+    "media/**",
+    "vendor/context-equation/THIRD-PARTY-*.txt",
+    "images/**",
     "settings/**",
     "syntaxes/**",
     "icon.png",
     "README.md",
     "LICENSE"
-  ]
+  ],
+  "devDependencies": {
+    "esbuild": "0.28.2"
+  }
 }

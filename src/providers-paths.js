@@ -42,6 +42,18 @@ function hasContextExecutable(binaryPath) {
     .some((name) => isExistingFile(path.join(binaryPath, name)));
 }
 
+/** Resolves the installed platform's ConTeXt binary directory. */
+function resolvePlatformBinaryDirectory(texRootPath) {
+  const root = resolveConfiguredPath(texRootPath);
+  if (!isExistingDirectory(root)) {
+    return '';
+  }
+
+  return readPlatformFolderNames(root)
+    .map((folderName) => path.join(root, folderName, 'bin'))
+    .find(isExistingDirectory) || '';
+}
+
 /** Finds a ConTeXt distribution root by locating its executable on PATH. */
 function findTexRootPathOnPath() {
   const executableNames = process.platform === 'win32'
@@ -106,19 +118,19 @@ function resolveXmlPathFromTexRoot(texRootPath) {
 }
 
 function resolveContextExecutableFromTexRoot(texRootPath) {
-  const root = resolveConfiguredPath(texRootPath);
-  if (!isExistingDirectory(root)) {
-    return 'context';
-  }
+  const binaryPath = resolvePlatformBinaryDirectory(texRootPath);
+  return binaryPath && hasContextExecutable(binaryPath)
+    ? path.join(binaryPath, 'context')
+    : 'context';
+}
 
-  for (const folderName of readPlatformFolderNames(root)) {
-    const binaryPath = path.join(root, folderName, 'bin');
-    if (isExistingDirectory(binaryPath) && hasContextExecutable(binaryPath)) {
-      return path.join(binaryPath, 'context');
-    }
-  }
-
-  return 'context';
+/** Resolves mtxrun directly from the installed platform's binary directory. */
+function resolveMtxRunExecutableFromTexRoot(texRootPath) {
+  const binaryPath = resolvePlatformBinaryDirectory(texRootPath);
+  const names = process.platform === 'win32'
+    ? ['mtxrun.exe', 'mtxrun.cmd', 'mtxrun.bat', 'mtxrun.lua']
+    : ['mtxrun', 'mtxrun.sh', 'mtxrun.lua'];
+  return names.map((name) => path.join(binaryPath, name)).find(isExistingFile) || '';
 }
 
 function resolveMainFilePath(configuredMainFilePath, workspaceFolderPath = '') {
@@ -128,5 +140,5 @@ function resolveMainFilePath(configuredMainFilePath, workspaceFolderPath = '') {
 
 
 
-  return { findTexRootPathOnPath, resolveXmlPathFromTexRoot, resolveContextExecutableFromTexRoot, resolveMainFilePath };
+  return { findTexRootPathOnPath, resolveXmlPathFromTexRoot, resolveContextExecutableFromTexRoot, resolveMtxRunExecutableFromTexRoot, resolveMainFilePath };
 };

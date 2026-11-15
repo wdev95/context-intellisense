@@ -10,6 +10,7 @@ module.exports = function createSemanticProviders(deps) {
     getTopLevelArgumentSegments,
     findAssignmentSeparator,
     getArgumentValueSpan,
+    stripTeXComment,
     maskTeXComments,
     getCommandArgumentSpec,
     getCommandSignatureSpecs,
@@ -24,16 +25,6 @@ module.exports = function createSemanticProviders(deps) {
     getInternalSemanticType
   } = deps;
   const getStructureEnvironmentMatches = require('./structure-ranges');
-  function stripTeXComment(line) {
-  for (let index = 0; index < line.length; index += 1) {
-    if (line[index] !== '%' || (index > 0 && line[index - 1] === '\\')) {
-      continue;
-    }
-    return line.slice(0, index);
-  }
-  return line;
-}
-
 /** Returns whether a source offset is inside an unescaped TeX comment. */
 function isTeXCommentOffset(text, offset) {
   const lineStart = text.lastIndexOf('\n', offset - 1) + 1;
@@ -196,21 +187,21 @@ function getArgumentSemanticTokens(document, tokenBuilder) {
       if (argument.delimiter !== 'bracket') {
         continue;
       }
-      const spec = getCommandArgumentSpec(
-        first.commandName,
-        argument.argumentIndex,
+      const argumentContext = {
+        commandName: first.commandName,
+        argumentIndex: argument.argumentIndex,
         bracketCount,
-        delimiters,
-        source.slice(argument.open + 1, argument.close)
-      );
-      if (!spec || spec.kind !== 'assignments') {
-        continue;
-      }
+        argumentDelimiters: delimiters,
+        currentSegment: source.slice(argument.open + 1, argument.close),
+        remainingSegment: ''
+      };
 
       const entry = getCommandEntry(first.commandName);
       const contentStart = argument.open + 1;
       const content = source.slice(contentStart, argument.close);
       for (const segment of getTopLevelArgumentSegments(content)) {
+        const spec = getCommandArgumentSpec({ ...argumentContext, currentSegment: segment.text });
+        if (!spec || spec.kind !== 'assignments') continue;
         const equalsIndex = findAssignmentSeparator(segment.text);
         if (equalsIndex < 0) {
           continue;
@@ -290,25 +281,35 @@ function getReferenceSemanticTokens(document, tokenBuilder) {
         }
         argumentDelimiters.push(open === '[' ? 'bracket' : 'brace');
         const content = line.slice(position + 1, close);
-        const spec = getCommandArgumentSpec(
-          commandMatch[1],
+        const context = {
+          commandName: commandMatch[1],
           argumentIndex,
           bracketCount,
           argumentDelimiters,
-          content
-        );
+          currentSegment: content,
+          remainingSegment: ''
+        };
+        const spec = getCommandArgumentSpec(context);
         const argumentSegments = getTopLevelArgumentSegments(content);
         const referenceAssignments = argumentSegments.filter(segment => {
           const equals = findAssignmentSeparator(segment.text);
           return equals >= 0 && /^reference$/i.test(segment.text.slice(0, equals).trim());
         });
+        const typedReferenceAssignment = argumentSegments.some(segment => {
+          const equals = findAssignmentSeparator(segment.text);
+          if (equals < 0) return false;
+          const segmentSpec = getCommandArgumentSpec({ ...context, currentSegment: segment.text });
+          const parameterName = segment.text.slice(0, equals).trim();
+          return [...getArgumentParameterTypes(segmentSpec, getCommandEntry(context.commandName), parameterName)]
+            .some(isReferenceType);
+        });
         const referenceArgument = inferredReferenceArguments.has(`${commandMatch[1]}:${argumentIndex}`)
           || spec && (
           spec.kind === 'keywords' && (spec.keywordTypes || []).some(isReferenceType)
-          ) || referenceAssignments.length > 0
+          ) || referenceAssignments.length > 0 || typedReferenceAssignment
           || (commandHasReferenceArgument(commandMatch[1]) && /[A-Za-z0-9]+:[A-Za-z0-9._-]+/.test(content));
         if (referenceArgument) {
-          const entry = getCommandEntry(commandMatch[1]);
+          const entry = getCommandEntry(context.commandName);
           const segments = spec?.kind === 'assignments' || referenceAssignments.length > 0
             ? argumentSegments.flatMap(segment => {
               const equals = findAssignmentSeparator(segment.text);
@@ -316,8 +317,9 @@ function getReferenceSemanticTokens(document, tokenBuilder) {
                 return [];
               }
               const parameterName = segment.text.slice(0, equals).trim();
+              const segmentSpec = getCommandArgumentSpec({ ...context, currentSegment: segment.text });
               if (!/^reference$/i.test(parameterName)
-                && ![...getArgumentParameterTypes(spec, entry, parameterName)].some(isReferenceType)) {
+                && ![...getArgumentParameterTypes(segmentSpec, entry, parameterName)].some(isReferenceType)) {
                 return [];
               }
               const value = segment.text.slice(equals + 1);
@@ -348,13 +350,8 @@ function getReferenceSemanticTokens(document, tokenBuilder) {
 }
 
   return {
-    stripTeXComment,
-    isTeXCommentOffset,
-    findMacroBodyStart,
     getMacroParameterSemanticTokens,
     getStructureFoldingRanges,
-    isReferenceInvocation,
-    commandHasReferenceArgument,
     getCommandSemanticTokens,
     getArgumentSemanticTokens,
     getReferenceSemanticTokens

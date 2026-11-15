@@ -81,7 +81,7 @@ const completionPresentation = createCompletionPresentation({
   getArgumentParameterTypes: (...args) => argumentProviders.getArgumentParameterTypes(...args),
   uniqueValues
 });
-const { escapeHtmlText, buildHtmlKeyValueTable, formatValueCell, chunkValuesForDisplay, collectOrderedValues, buildSignatureParts, getCommandCompletionKind } = completionPresentation;
+const { buildSignatureParts, getCommandCompletionKind } = completionPresentation;
 
 const { parseCommandMap } = createCommandXmlParser({ fs, path, vscode, parseAttributes, ensureEntry, getReferenceNames, makeCommandInsertText, buildArgumentSnippet, getCommandCompletionKind });
 
@@ -101,10 +101,10 @@ const dataProviders = createDataProviders({
   resolveXmlPathFromTexRoot: (...args) => pathResolvers.resolveXmlPathFromTexRoot(...args),
   resolveContextExecutableFromTexRoot: (...args) => pathResolvers.resolveContextExecutableFromTexRoot(...args)
 });
-const { cleanFontToken, parseFontSourceFile, loadFontCompletions, getCommandEntry, loadMathPrimitiveMetadata, getContextSourceFiles, loadRegisterMetadata, createRegisterCompletions, addFontMetadata, loadData, setDataWarningReporter } = dataProviders;
+const { getCommandEntry, loadData, setDataWarningReporter, workspaceInterfaceWatcherPatterns } = dataProviders;
 
 argumentProviders = createArgumentProviders({ vscode, fs, path, isContextTexDocument, isConTeXtTexFilePath, inferredReferenceArguments, REFERENCE_TOKEN_PATTERN, workspaceReferenceState, workspaceFileState, getCache: () => dataProviders.getCache(), getCommandEntry, buildSignatureParts, makeArgumentPreview, uniqueValues });
-const { isEscaped, findMatchingDelimiter, mapCommandArguments, getBracketInvocationContext, getDocumentBracketContext, getTopLevelArgumentSegments, findAssignmentSeparator, getArgumentValueSpan, maskTeXComments, getCurrentAssignmentValue, setCompletionRange, createDynamicCompletionList, getCompletionRangeStart, triggerArgumentInformation, scheduleArgumentInformation, getCommandArgumentSpec, getCommandSignatureSpecs, getArgumentParameterNames, getArgumentParameterValues, getArgumentParameterTypes, isReferenceType, scanWorkspaceReferences, scanWorkspaceArgumentDiagnostics, createArgumentCompletionItems, initializeWorkspaceFileCache, getActiveAssignmentKey, createCommandItems } = argumentProviders;
+const { isEscaped, findMatchingDelimiter, mapCommandArguments, getBracketInvocationContext, getDocumentBracketContext, getTopLevelArgumentSegments, findAssignmentSeparator, getArgumentValueSpan, maskTeXComments, getCurrentAssignmentValue, setCompletionRange, createDynamicCompletionList, getCompletionRangeStart, getCompletionRangeEnd, triggerArgumentInformation, scheduleArgumentInformation, getCommandArgumentSpec, getCommandSignatureSpecs, getArgumentParameterNames, getArgumentParameterValues, getArgumentParameterTypes, isReferenceType, scanWorkspaceReferences, scanWorkspaceArgumentDiagnostics, createArgumentCompletionItems, initializeWorkspaceFileCache, getActiveAssignmentKey, createCommandItems } = argumentProviders;
 
 async function applyContextLanguageToOpenDocuments() {
   const updates = [];
@@ -129,8 +129,8 @@ async function applyContextLanguageToOpenDocuments() {
   }
 }
 
-const systemProviders = createSystemProviders({ vscode, fs, path, cp, isExistingDirectory, isExistingFile, resolveConfiguredPath, normalizePathForComparison, toWorkspaceRelativePath, openedPdfPaths, ACADEMIC_PDF_VIEWER_EXTENSION_ID, ACADEMIC_PDF_VIEW_TYPE, ACADEMIC_PDF_RELOAD_COMMAND });
-const { collectWorkspaceTemporaryFiles, collectWorkspaceTemporaryFileState, temporaryFileExcludePatterns, temporaryFileWatcherPatterns, searchForFile, getAcademicPdfViewerExtension, formatSyncTexTracePath, formatSyncTexTraceUri, findOpenPdfGroup, forgetClosedPdfTabs, runProcess, resolveSyncTexExecutable, resolveMtxRunExecutable, getAcademicPdfViewerApi, openPdfFile, reloadActiveAcademicPdf } = systemProviders;
+const systemProviders = createSystemProviders({ vscode, fs, path, cp, isExistingDirectory, isExistingFile, resolveConfiguredPath, resolveMtxRunExecutable: (...args) => pathResolvers.resolveMtxRunExecutableFromTexRoot(...args), normalizePathForComparison, toWorkspaceRelativePath, openedPdfPaths, ACADEMIC_PDF_VIEWER_EXTENSION_ID, ACADEMIC_PDF_VIEW_TYPE, ACADEMIC_PDF_RELOAD_COMMAND });
+const { collectWorkspaceTemporaryFiles, collectWorkspaceTemporaryFileState, temporaryFileExcludePatterns, temporaryFileWatcherPatterns, searchForFile, getAcademicPdfViewerExtension, formatSyncTexTracePath, formatSyncTexTraceUri, findOpenPdfGroup, findAnyPdfGroup, forgetClosedPdfTabs, runProcess, resolveSyncTexExecutable, resolveMtxRunExecutable, getAcademicPdfViewerApi, openPdfFile, reloadActiveAcademicPdf } = systemProviders;
 
 pathResolvers = createPathResolvers({ fs, path, isExistingDirectory, isExistingFile, resolveConfiguredPath, searchForFile });
 const { resolveXmlPathFromTexRoot, resolveContextExecutableFromTexRoot, resolveMainFilePath } = pathResolvers;
@@ -145,6 +145,7 @@ const semanticProviders = createSemanticProviders({
   getTopLevelArgumentSegments,
   findAssignmentSeparator,
   getArgumentValueSpan,
+  stripTeXComment,
   maskTeXComments,
   getCommandArgumentSpec,
   getCommandSignatureSpecs,
@@ -165,23 +166,25 @@ const { provideDocumentSymbols } = createSymbolProvider({
   findMatchingDelimiter,
   getStructureEnvironmentMatches: require('./structure-ranges')
 });
+const environmentPairs = require('./environment-pairs')({ vscode });
 
 const activate = createActivator({
   isExistingFile, isConTeXtTexFilePath, toWorkspaceRelativePath, resolveConfiguredPath, normalizePathForComparison, inferredReferenceArguments, workspaceReferenceState,
   vscode, fs, path, zlib, isContextTexDocument, applyContextLanguageToOpenDocuments,
   collectWorkspaceTemporaryFiles, collectWorkspaceTemporaryFileState,
   temporaryFileExcludePatterns, temporaryFileWatcherPatterns, getAcademicPdfViewerExtension,
-  formatSyncTexTracePath, formatSyncTexTraceUri, findOpenPdfGroup, forgetClosedPdfTabs,
+  formatSyncTexTracePath, formatSyncTexTraceUri, findOpenPdfGroup, findAnyPdfGroup, forgetClosedPdfTabs,
   runProcess, resolveSyncTexExecutable, resolveMtxRunExecutable, getAcademicPdfViewerApi,
-  openPdfFile, reloadActiveAcademicPdf, ...pathResolvers, ...semanticProviders, provideDocumentSymbols,
-  loadData, setDataWarningReporter, buildSignatureParts,
+  openPdfFile, reloadActiveAcademicPdf, ...pathResolvers, ...semanticProviders, provideDocumentSymbols, environmentPairs,
+  loadData, setDataWarningReporter, workspaceInterfaceWatcherPatterns, buildSignatureParts,
   triggerArgumentInformation, scheduleArgumentInformation, scanWorkspaceReferences,
   scanWorkspaceArgumentDiagnostics,
   initializeWorkspaceFileCache,
   createEmbeddedLuaBridge,
   getCommandSignatureSpecs, getActiveAssignmentKey, createCommandItems, createArgumentCompletionItems,
   getDocumentBracketContext, setCompletionRange, createDynamicCompletionList,
-  getCompletionRangeStart, parseSyncTexViewResult, parseSyncTexEditResult,
+  findMatchingDelimiter, maskTeXComments,
+  getCompletionRangeStart, getCompletionRangeEnd, parseSyncTexViewResult, parseSyncTexEditResult,
   parseMtxSyncTexFindResult, parseMtxSyncTexReportResult,
   getCache: () => dataProviders.getCache()
 });

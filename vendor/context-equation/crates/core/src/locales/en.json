@@ -1,0 +1,467 @@
+{
+ "code": "en",
+ "name": "English",
+ "decimal": ".",
+ "thousands": ",",
+ "open_interval": false,
+ "written": {},
+ "speech": {
+  "function_of": "{0} of",
+  "binomial": "{0} choose {1}",
+  "fraction_simple": "{0} over {1}",
+  "fraction": "fraction, {0}, over {1}, end fraction",
+  "sqrt": "square root of {0}",
+  "cbrt": "cube root of {0}",
+  "root_index": "root of index {0} of {1}",
+  "root_end": "end root",
+  "abs": "absolute value of {0}",
+  "abs_long": "absolute value of, {0}, end absolute value",
+  "norm": "norm of {0}",
+  "norm_long": "norm of, {0}, end norm",
+  "accent.vector": "vector {0}",
+  "accent.hat": "{0} hat",
+  "accent.bar": "{0} bar",
+  "accent.dot": "{0} dot",
+  "accent.ddot": "{0} double dot",
+  "accent.tilde": "{0} tilde",
+  "accent.arc": "arc {0}",
+  "accent.segment": "segment {0}",
+  "arrow.right": "right arrow",
+  "arrow.left": "left arrow",
+  "arrow.both": "double arrow",
+  "arrow.implies": "implies",
+  "arrow.equals": "equals",
+  "arrow.down": "down arrow",
+  "arrow.up": "up arrow",
+  "canceled": "{0} canceled",
+  "slashed": "{0} slash",
+  "circled": "circled {0}",
+  "angle": "angle {0}",
+  "boxed": "boxed {0}",
+  "list_and": "and",
+  "with_above": "with {0} above",
+  "with_below": "with {0} below",
+  "long_division": "long division of {0} by {1}: quotient {2}, remainder {3}",
+  "column_arithmetic": "written calculation: {0} {1} {2} equals {3}",
+  "big_from_to": "{0} from {1} to {2} of",
+  "big_over": "{0} over {1} of",
+  "big_to": "{0} to {1} of",
+  "lim_as": "limit as {0} of",
+  "tending_to": "tends to",
+  "inverse": "inverse {0}",
+  "inverse_trig": "inverse {0}",
+  "log_base": "base {0}",
+  "sub": "sub {0}",
+  "squared": "squared",
+  "cubed": "cubed",
+  "prime": "prime",
+  "double_prime": "double prime",
+  "degrees": "degrees",
+  "from_right": "from the right",
+  "from_left": "from the left",
+  "power": "to the {0}",
+  "power_long": "to the power, {0}, end exponent",
+  "matrix": "matrix {0} by {1}",
+  "row": "row {0}",
+  "case": "case {0}",
+  "determinant": "determinant",
+  "cases": "cases",
+  "diagram": "diagram",
+  "diagram_arrow": "arrow from {0} to {1}",
+  "chem.structure": "structure of {0}",
+  "chem.ring": "with 1 ring",
+  "chem.rings": "with {0} rings",
+  "chem.aromatic_one": "with 1 aromatic ring",
+  "chem.aromatic": "with {0} aromatic rings",
+  "chem.charge": "charge {0}",
+  "chem.over": "{0} over the arrow",
+  "chem.under": "{0} under the arrow",
+  "chem.bond_between": "the bond between {0} and {1}",
+  "chem.bond_dashed": "bond of a dashed line",
+  "chem.bond_dashed_over_single": "bond of a dashed line over a line",
+  "chem.bond_dashed_over_double": "bond of a dashed line over two lines",
+  "chem.bond_dashed_between": "bond of a dashed line between two lines",
+  "chem.bond_four_dots": "bond of four dots",
+  "chem.forward": "reacts to give",
+  "chem.backward": "is formed from",
+  "chem.equilibrium": "in equilibrium with",
+  "chem.equilibrium_right": "in equilibrium, favoring the products, with",
+  "chem.equilibrium_left": "in equilibrium, favoring the reactants, with",
+  "chem.resonance": "in resonance with",
+  "chem.retro": "is made from",
+  "chem.no_reaction": "does not react to give",
+  "chem.move": "curved arrow: an electron pair moves from {0} to {1}",
+  "chem.move_single": "curved arrow: one electron moves from {0} to {1}",
+  "capital": "capital {0}",
+  "negative": "negative",
+  "open_interval": "open interval",
+  "close_interval": "close interval",
+  "remainder": "remainder",
+  "fn.sin": "sine",
+  "fn.cos": "cosine",
+  "fn.tan": "tangent",
+  "fn.cot": "cotangent",
+  "fn.sec": "secant",
+  "fn.csc": "cosecant",
+  "fn.log": "log",
+  "fn.ln": "natural log",
+  "fn.lim": "limit",
+  "fn.det": "determinant",
+  "fn.max": "maximum",
+  "fn.min": "minimum",
+  "op.+": "plus",
+  "op.−": "minus",
+  "op.–": "to",
+  "op.±": "plus or minus",
+  "op.∓": "minus or plus",
+  "op.×": "times",
+  "op./": "divided by",
+  "op.=": "equals",
+  "op.<": "is less than",
+  "op.>": "is greater than",
+  "op.≤": "is less than or equal to",
+  "op.≥": "is greater than or equal to",
+  "op.≠": "is not equal to",
+  "op.≈": "is approximately",
+  "op.≡": "is congruent to",
+  "op.∝": "is proportional to",
+  "op.→": "tends to",
+  "op.⇒": "implies",
+  "op.⇔": "if and only if",
+  "op.⇌": "in equilibrium with",
+  "op.∈": "is in",
+  "op.∉": "is not in",
+  "op.⊂": "is a subset of",
+  "op.⊆": "is a subset of or equal to",
+  "op.∪": "union",
+  "op.∩": "intersection",
+  "op.∞": "infinity",
+  "op.∂": "partial",
+  "op.∇": "nabla",
+  "op.∀": "for all",
+  "op.∃": "there exists",
+  "op.∅": "empty set",
+  "op.(": "open paren",
+  "op.)": "close paren",
+  "op.[": "open bracket",
+  "op.]": "close bracket",
+  "op.{": "open brace",
+  "op.}": "close brace",
+  "op.,": "comma",
+  "op.;": "semicolon",
+  "op.:": "colon",
+  "op.!": "factorial",
+  "op.|": "bar",
+  "op.°": "degrees",
+  "op.%": "percent",
+  "op.…": "and so on",
+  "op.∠": "angle",
+  "op.△": "triangle",
+  "op.⊥": "is perpendicular to",
+  "op.∥": "is parallel to",
+  "op.′": "prime",
+  "big.∑": "sum",
+  "big.∏": "product",
+  "big.∫": "integral",
+  "big.∬": "double integral",
+  "big.∭": "triple integral",
+  "big.∮": "contour integral",
+  "big.⋃": "union",
+  "big.⋂": "intersection",
+  "big.other": "operator",
+  "greek.α": "alpha",
+  "greek.β": "beta",
+  "greek.γ": "gamma",
+  "greek.δ": "delta",
+  "greek.ε": "epsilon",
+  "greek.ζ": "zeta",
+  "greek.η": "eta",
+  "greek.θ": "theta",
+  "greek.κ": "kappa",
+  "greek.λ": "lambda",
+  "greek.μ": "mu",
+  "greek.ν": "nu",
+  "greek.ξ": "xi",
+  "greek.π": "pi",
+  "greek.ρ": "rho",
+  "greek.σ": "sigma",
+  "greek.τ": "tau",
+  "greek.φ": "phi",
+  "greek.χ": "chi",
+  "greek.ψ": "psi",
+  "greek.ω": "omega"
+ },
+ "units": {
+  "per": "per",
+  "singular": "one",
+  "prefixes": {
+   "yotta": "yotta",
+   "zetta": "zetta",
+   "exa": "exa",
+   "peta": "peta",
+   "tera": "tera",
+   "giga": "giga",
+   "mega": "mega",
+   "kilo": "kilo",
+   "hecto": "hecto",
+   "deca": "deca",
+   "deci": "deci",
+   "centi": "centi",
+   "milli": "milli",
+   "micro": "micro",
+   "nano": "nano",
+   "pico": "pico",
+   "femto": "femto",
+   "atto": "atto",
+   "zepto": "zepto",
+   "yocto": "yocto"
+  },
+  "names": {
+   "meter": [
+    "meter",
+    "meters"
+   ],
+   "second": [
+    "second",
+    "seconds"
+   ],
+   "gram": [
+    "gram",
+    "grams"
+   ],
+   "kilogram": [
+    "kilogram",
+    "kilograms"
+   ],
+   "ampere": [
+    "ampere",
+    "amperes"
+   ],
+   "kelvin": [
+    "kelvin",
+    "kelvins"
+   ],
+   "mole": [
+    "mole",
+    "moles"
+   ],
+   "candela": [
+    "candela",
+    "candelas"
+   ],
+   "newton": [
+    "newton",
+    "newtons"
+   ],
+   "joule": [
+    "joule",
+    "joules"
+   ],
+   "watt": [
+    "watt",
+    "watts"
+   ],
+   "pascal": [
+    "pascal",
+    "pascals"
+   ],
+   "hertz": [
+    "hertz",
+    "hertz"
+   ],
+   "coulomb": [
+    "coulomb",
+    "coulombs"
+   ],
+   "volt": [
+    "volt",
+    "volts"
+   ],
+   "ohm": [
+    "ohm",
+    "ohms"
+   ],
+   "farad": [
+    "farad",
+    "farads"
+   ],
+   "tesla": [
+    "tesla",
+    "teslas"
+   ],
+   "weber": [
+    "weber",
+    "webers"
+   ],
+   "henry": [
+    "henry",
+    "henries"
+   ],
+   "siemens": [
+    "siemens",
+    "siemens"
+   ],
+   "liter": [
+    "liter",
+    "liters"
+   ],
+   "hour": [
+    "hour",
+    "hours"
+   ],
+   "minute": [
+    "minute",
+    "minutes"
+   ],
+   "day": [
+    "day",
+    "days"
+   ],
+   "degreeCelsius": [
+    "degree Celsius",
+    "degrees Celsius"
+   ],
+   "degree": [
+    "degree",
+    "degrees"
+   ],
+   "electronvolt": [
+    "electronvolt",
+    "electronvolts"
+   ],
+   "calorie": [
+    "calorie",
+    "calories"
+   ],
+   "bar": [
+    "bar",
+    "bars"
+   ],
+   "atm": [
+    "atmosphere",
+    "atmospheres"
+   ],
+   "percent": [
+    "percent",
+    "percent"
+   ],
+   "mmHg": [
+    "millimeter of mercury",
+    "millimeters of mercury"
+   ],
+   "hectare": [
+    "hectare",
+    "hectares"
+   ],
+   "tonne": [
+    "tonne",
+    "tonnes"
+   ],
+   "angstrom": [
+    "angstrom",
+    "angstroms"
+   ],
+   "radian": [
+    "radian",
+    "radians"
+   ],
+   "steradian": [
+    "steradian",
+    "steradians"
+   ],
+   "lumen": [
+    "lumen",
+    "lumens"
+   ],
+   "lux": [
+    "lux",
+    "lux"
+   ],
+   "becquerel": [
+    "becquerel",
+    "becquerels"
+   ],
+   "gray": [
+    "gray",
+    "grays"
+   ],
+   "sievert": [
+    "sievert",
+    "sieverts"
+   ],
+   "katal": [
+    "katal",
+    "katals"
+   ],
+   "dalton": [
+    "dalton",
+    "daltons"
+   ],
+   "atomicmassunit": [
+    "atomic mass unit",
+    "atomic mass units"
+   ],
+   "astronomicalunit": [
+    "astronomical unit",
+    "astronomical units"
+   ],
+   "arcminute": [
+    "arcminute",
+    "arcminutes"
+   ],
+   "arcsecond": [
+    "arcsecond",
+    "arcseconds"
+   ],
+   "bel": [
+    "bel",
+    "bels"
+   ],
+   "neper": [
+    "neper",
+    "nepers"
+   ],
+   "barn": [
+    "barn",
+    "barns"
+   ],
+   "knot": [
+    "knot",
+    "knots"
+   ],
+   "nauticalmile": [
+    "nautical mile",
+    "nautical miles"
+   ],
+   "bit": [
+    "bit",
+    "bits"
+   ],
+   "byte": [
+    "byte",
+    "bytes"
+   ],
+   "molar": [
+    "molar",
+    "molar"
+   ],
+   "torr": [
+    "torr",
+    "torr"
+   ]
+  }
+ },
+ "double_struck": {
+  "letter": "double-struck {0}",
+  "sets": {
+   "N": "the natural numbers",
+   "Z": "the integers",
+   "Q": "the rational numbers",
+   "R": "the real numbers",
+   "C": "the complex numbers"
+  }
+ },
+ "optional": {
+  "dot_product": "dot"
+ }
+}

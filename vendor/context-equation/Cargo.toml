@@ -1,0 +1,23 @@
+[workspace]
+resolver = "2"
+members = ["crates/core", "crates/wasm"]
+default-members = ["crates/wasm"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+# the published name of the core lives only here and in crates/core/Cargo.toml
+context-equation-core = { path = "crates/core", version = "0.1.0" }
+
+# The wasm that npm/, site/ and bench/ ship (`--profile wasm`): built for size, since every browser
+# downloads it: about 12% smaller than release with gzip and about 13% slower per equation (bench/),
+# with the same SVGs. Native builds (CLI, Python, Rust) keep the release profile.
+[profile.wasm]
+inherits = "release"
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true

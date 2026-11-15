@@ -18,6 +18,9 @@ function getCommandSemanticType(metadata) {
   if (metadata.category === 'mathematics') {
     return 'contextMathCommand';
   }
+  if (metadata.level === 'document') {
+    return 'contextCommand';
+  }
   if (metadata.category === 'fonts') {
     return 'typeParameter';
   }

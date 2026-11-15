@@ -1,4 +1,6 @@
-/** Returns XML-defined structure ranges with source offsets. */
+const { stripTeXComment } = require('./core/tex-text');
+
+/** Returns structure ranges with source offsets. */
 module.exports = function getStructureEnvironmentMatches(document, isEnvironment, getStandaloneRank) {
   const text = document.getText();
   const stack = [];
@@ -10,13 +12,16 @@ module.exports = function getStructureEnvironmentMatches(document, isEnvironment
   while (lineStart <= text.length) {
     const lineEnd = text.indexOf('\n', lineStart);
     const end = lineEnd < 0 ? text.length : lineEnd;
-    const line = maskTeXComment(text.slice(lineStart, end));
+    const line = stripTeXComment(text.slice(lineStart, end));
     commandRe.lastIndex = 0;
     let match;
     while ((match = commandRe.exec(line)) !== null) {
       const command = `${match[1] || ''}${match[2]}`;
-      const environment = `start${match[2]}`;
-      if (match[1] === 'start' && isEnvironment(command)) {
+      const bareEnvironmentCommand = !match[1] && (match[2] === 'start' || match[2] === 'stop');
+      const environment = bareEnvironmentCommand ? 'start' : `start${match[2]}`;
+      const isStart = match[1] === 'start' || (bareEnvironmentCommand && match[2] === 'start');
+      const isStop = match[1] === 'stop' || (bareEnvironmentCommand && match[2] === 'stop');
+      if (isStart && isEnvironment(environment)) {
         const start = {
           command,
           environment,
@@ -29,7 +34,7 @@ module.exports = function getStructureEnvironmentMatches(document, isEnvironment
         starts.push({ ...start, kind: 'paired' });
         continue;
       }
-      if (!match[1]) {
+      if (!match[1] && !bareEnvironmentCommand) {
         const rank = getStandaloneRank(command);
         if (Number.isInteger(rank)) {
           starts.push({
@@ -43,7 +48,7 @@ module.exports = function getStructureEnvironmentMatches(document, isEnvironment
         }
         continue;
       }
-      if (match[1] !== 'stop' || !isEnvironment(environment)) {
+      if (!isStop || !isEnvironment(environment)) {
         continue;
       }
       const startIndex = stack.map(item => item.environment).lastIndexOf(environment);
@@ -51,11 +56,15 @@ module.exports = function getStructureEnvironmentMatches(document, isEnvironment
         continue;
       }
       const start = stack.splice(startIndex, 1)[0];
+      const stopStart = lineStart + match.index;
+      const stopEnd = stopStart + match[0].length;
       matches.push({
         ...start,
         kind: 'paired',
-        end: lineStart + match.index + match[0].length,
-        endLine: document.positionAt(lineStart + match.index).line
+        stopStart,
+        stopEnd,
+        end: stopEnd,
+        endLine: document.positionAt(stopStart).line
       });
     }
     if (lineEnd < 0) {
@@ -76,14 +85,3 @@ module.exports = function getStructureEnvironmentMatches(document, isEnvironment
   }
   return matches.sort((left, right) => left.start - right.start);
 };
-
-/** Masks unescaped TeX comments without changing source offsets. */
-function maskTeXComment(line) {
-  for (let index = 0; index < line.length; index += 1) {
-    if (line[index] !== '%' || (index > 0 && line[index - 1] === '\\')) {
-      continue;
-    }
-    return `${line.slice(0, index)}${' '.repeat(line.length - index)}`;
-  }
-  return line;
-}

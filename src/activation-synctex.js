@@ -1,6 +1,6 @@
 /** Creates the SyncTeX bridge and source-navigation services. */
 module.exports = function createSyncTexActivationServices(deps) {
-  const { context, outputChannel, vscode, fs, path, zlib, isContextTexDocument, isExistingFile, normalizePathForComparison, toWorkspaceRelativePath, resolveConfiguredPath, resolveXmlPathFromTexRoot, resolveMainFilePath, resolveContextExecutableFromTexRoot, resolveSyncTexExecutable, resolveMtxRunExecutable, runProcess, parseSyncTexViewResult, parseSyncTexEditResult, parseMtxSyncTexFindResult, parseMtxSyncTexReportResult, getAcademicPdfViewerApi, findOpenPdfGroup, formatSyncTexTracePath, formatSyncTexTraceUri } = deps;
+  const { context, outputChannel, vscode, fs, path, zlib, isContextTexDocument, isExistingFile, normalizePathForComparison, toWorkspaceRelativePath, resolveConfiguredPath, resolveXmlPathFromTexRoot, resolveMainFilePath, resolveContextExecutableFromTexRoot, resolveSyncTexExecutable, resolveMtxRunExecutable, runProcess, parseSyncTexViewResult, parseSyncTexEditResult, parseMtxSyncTexFindResult, parseMtxSyncTexReportResult, getAcademicPdfViewerApi, openPdfFile, findOpenPdfGroup, formatSyncTexTracePath, formatSyncTexTraceUri } = deps;
 function writeSyncTexTrace(direction, details) {
     outputChannel.appendLine(`[SyncTeX ${direction}]`);
     outputChannel.appendLine(JSON.stringify({
@@ -20,7 +20,7 @@ function writeSyncTexTrace(direction, details) {
   function getSyncTexMode() {
     const configured = String(vscode.workspace
       .getConfiguration('contextIntellisense')
-      .get('synctex', 'doubleclick') || '').toLowerCase();
+      .get('synctex.mode', 'doubleclick') || '').toLowerCase();
     return ['off', 'doubleclick', 'rightclick'].includes(configured)
       ? configured
       : 'doubleclick';
@@ -29,18 +29,18 @@ function writeSyncTexTrace(direction, details) {
   function getSyncTexIntegrationMode() {
     const configured = String(vscode.workspace
       .getConfiguration('contextIntellisense')
-      .get('synctexmode', 'API') || '').toLowerCase();
+      .get('synctex.viewerMode', 'API') || '').toLowerCase();
     return configured === 'bridge' ? 'bridge' : 'api';
   }
 
   function getConfiguredTexRootPath() {
     const config = vscode.workspace.getConfiguration('contextIntellisense');
-    return String(config.get('texRootPath', '') || '').trim();
+    return String(config.get('distribution.texRootPath', '') || '').trim();
   }
 
   function getConfiguredMainFilePath() {
     const config = vscode.workspace.getConfiguration('contextIntellisense');
-    return String(config.get('mainFilePath', '') || '').trim();
+    return String(config.get('compilation.mainFilePath', '') || '').trim();
   }
 
   /** Resolves a workspace-relative path received from the PDF viewer. */
@@ -74,6 +74,11 @@ function writeSyncTexTrace(direction, details) {
     }
 
     return path.isAbsolute(value) ? value : resolveWorkspaceRelativePath(value);
+  }
+
+  /** Returns the PDF identifier used by the Academic PDF Viewer API. */
+  function getViewerPdfIdentifier(pdfPath) {
+    return vscode.Uri.file(pdfPath).toString();
   }
 
   function hasConfiguredTexRoot() {
@@ -225,11 +230,10 @@ function writeSyncTexTrace(direction, details) {
       return {
         executable: mtxrun,
         args: [
-          '--script', 'synctex', '--report',
+          '--script', 'synctex', '--report', '--direct', '--tolerance=10',
           `--page=${event.pageNumber}`,
           `--x=${event.x}`,
           `--y=${event.y}`,
-          '--console',
           sidecarName
         ],
         backend: 'mtxrun',
@@ -374,17 +378,27 @@ function writeSyncTexTrace(direction, details) {
 
     const message = {
       type: 'synctex.forward',
-      pdfUri: vscode.Uri.file(pdfPath).toString(),
+      pdfUri: getViewerPdfIdentifier(pdfPath),
       pageNumber: location.pageNumber,
       x: location.x,
       y: location.y
     };
-    const accepted = viewer.tex.synctexForward(message);
+    let accepted = viewer.tex.synctexForward(message);
+    let openedForSyncTex = false;
+    if (!accepted && !findOpenPdfGroup(pdfPath)) {
+      await openPdfFile(pdfPath);
+      openedForSyncTex = true;
+      const reopenedViewer = await getAcademicPdfViewerApi();
+      accepted = reopenedViewer?.tex.synctexForward(message) === true;
+    }
     writeSyncTexTrace('forward', {
       ...trace,
       parsedLocation: location,
-      viewerMessage: { ...message, pdfUri: formatSyncTexTraceUri(message.pdfUri) },
-      viewerAccepted: accepted
+      viewerMessage: message,
+      viewerAccepted: accepted,
+      status: accepted ? 'sent' : 'viewer-rejected',
+      openedForSyncTex,
+      ...(!accepted && { reason: 'No open Academic PDF Viewer panel matched this canonical PDF URI.' })
     });
   }
 
@@ -453,7 +467,7 @@ function writeSyncTexTrace(direction, details) {
     if (getSyncTexMode() === 'off') {
       writeSyncTexTrace('inverse', {
         status: 'ignored',
-        reason: 'SyncTeX is disabled by contextIntellisense.synctex.',
+        reason: 'SyncTeX is disabled by contextIntellisense.synctex.mode.',
         viewerEvent: { ...event, pdfUri: formatSyncTexTraceUri(event.pdfUri) }
       });
       return;

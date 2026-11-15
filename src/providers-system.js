@@ -6,7 +6,7 @@ const {
 
 /** Creates filesystem, PDF-viewer, and process services. */
 module.exports = function createSystemProviders(deps) {
-  const { vscode, fs, path, cp, isExistingDirectory, isExistingFile, resolveConfiguredPath, normalizePathForComparison, toWorkspaceRelativePath, openedPdfPaths, ACADEMIC_PDF_VIEWER_EXTENSION_ID, ACADEMIC_PDF_VIEW_TYPE, ACADEMIC_PDF_RELOAD_COMMAND } = deps;
+  const { vscode, fs, path, cp, isExistingDirectory, isExistingFile, resolveConfiguredPath, resolveMtxRunExecutable, normalizePathForComparison, toWorkspaceRelativePath, openedPdfPaths, ACADEMIC_PDF_VIEWER_EXTENSION_ID, ACADEMIC_PDF_VIEW_TYPE, ACADEMIC_PDF_RELOAD_COMMAND } = deps;
 const temporaryFileExcludePatterns = [
   ...[...temporaryFileExtensions].map(extension => `**/*${extension}`),
   '**/*.synctex.gz',
@@ -169,6 +169,53 @@ function findOpenPdfGroup(pdfPath) {
   return null;
 }
 
+/** Locks the active editor group only when it contains the specified PDF. */
+async function lockActivePdfGroup(pdfPath) {
+  const group = vscode.window.tabGroups.all.find((entry) => entry.isActive);
+  const uri = group && group.activeTab && group.activeTab.input
+    ? group.activeTab.input.uri
+    : null;
+  if (!uri || uri.scheme !== 'file' || normalizePathForComparison(uri.fsPath) !== normalizePathForComparison(pdfPath)) {
+    return;
+  }
+
+  try {
+    await vscode.commands.executeCommand('workbench.action.lockEditorGroup');
+  } catch (error) {
+    // Keep PDF opening successful if the workbench command is unavailable.
+  }
+}
+
+/** Finds the active or first group already hosting a PDF viewer. */
+function findAnyPdfGroup() {
+  const groups = vscode.window.tabGroups.all;
+  const hasPdf = (group) => group.tabs.some((tab) => {
+    const uri = tab.input && tab.input.uri;
+    return uri && uri.scheme === 'file' && path.extname(uri.fsPath).toLowerCase() === '.pdf';
+  });
+  return groups.find((group) => group.isActive && hasPdf(group))
+    || groups.find(hasPdf)
+    || null;
+}
+
+/** Opens PDFs beside a populated non-PDF group, without splitting an empty or PDF-only layout. */
+function resolvePdfViewColumn(existingGroup, pdfGroup) {
+  if (existingGroup || pdfGroup) {
+    return (existingGroup || pdfGroup).viewColumn;
+  }
+
+  const activeGroup = vscode.window.tabGroups.all.find((group) => group.isActive);
+  const activeUri = activeGroup && activeGroup.activeTab && activeGroup.activeTab.input
+    ? activeGroup.activeTab.input.uri
+    : null;
+  if (activeUri && activeUri.scheme === 'file' && path.extname(activeUri.fsPath).toLowerCase() === '.pdf') {
+    return activeGroup.viewColumn;
+  }
+  return activeGroup && activeGroup.tabs.length > 0
+    ? vscode.ViewColumn.Beside
+    : vscode.ViewColumn.Active;
+}
+
 function forgetClosedPdfTabs(event) {
   for (const tab of event.closed || []) {
     const uri = tab.input && tab.input.uri;
@@ -261,6 +308,7 @@ function openWithSystemDefault(filePath) {
 async function openPdfFile(pdfPath, options = {}) {
   const normalizedPdfPath = normalizePathForComparison(pdfPath);
   const existingGroup = findOpenPdfGroup(pdfPath);
+  const viewColumn = options.viewColumn ?? resolvePdfViewColumn(existingGroup, findAnyPdfGroup());
   const forceFocus = options.forceFocus === true;
 
   // Reopening the custom editor recreates the PDF viewer and loses its
@@ -275,6 +323,7 @@ async function openPdfFile(pdfPath, options = {}) {
     // Remember a PDF found in this window as well, so detaching it afterwards
     // does not make the next compile open a second editor.
     openedPdfPaths.add(normalizedPdfPath);
+    await lockActivePdfGroup(pdfPath);
     return true;
   }
 
@@ -290,12 +339,14 @@ async function openPdfFile(pdfPath, options = {}) {
   const pdfUri = vscode.Uri.file(pdfPath);
   if (pdfExtension) {
     try {
-      const viewColumn = existingGroup ? existingGroup.viewColumn : vscode.ViewColumn.Beside;
       await vscode.commands.executeCommand('vscode.openWith', pdfUri, ACADEMIC_PDF_VIEW_TYPE, {
         viewColumn,
         preview: false,
         preserveFocus: options.preserveFocus === true
       });
+      if (options.preserveFocus !== true) {
+        await lockActivePdfGroup(pdfPath);
+      }
       openedPdfPaths.add(normalizedPdfPath);
       return true;
     } catch (error) {
@@ -303,7 +354,6 @@ async function openPdfFile(pdfPath, options = {}) {
     }
   }
 
-  const viewColumn = existingGroup ? existingGroup.viewColumn : vscode.ViewColumn.Beside;
   const openedByInstalledViewer = await openWithInstalledPdfViewer(
     pdfUri,
     viewColumn,
@@ -314,6 +364,9 @@ async function openPdfFile(pdfPath, options = {}) {
     // Do not cache system-opened PDFs: calling the OS handler after a later
     // compile is how external viewers receive/reload the freshly built file.
     return true;
+  }
+  if (options.preserveFocus !== true) {
+    await lockActivePdfGroup(pdfPath);
   }
   openedPdfPaths.add(normalizedPdfPath);
   return true;
@@ -381,18 +434,6 @@ function resolveSyncTexExecutable(texRootPath) {
   return 'synctex';
 }
 
-/** Resolves the ConTeXt mtxrun executable from the configured TeX tree. */
-function resolveMtxRunExecutable(texRootPath) {
-  const root = resolveConfiguredPath(texRootPath);
-  if (!isExistingDirectory(root)) {
-    return '';
-  }
-  const targetNames = process.platform === 'win32'
-    ? ['mtxrun.exe', 'mtxrun.cmd', 'mtxrun.bat']
-    : ['mtxrun', 'mtxrun.sh', 'mtxrun.lua'];
-  return searchForFile(root, targetNames, 8) || '';
-}
-
 /** Returns the active Academic PDF Viewer API, activating it when necessary. */
 async function getAcademicPdfViewerApi() {
   const extension = vscode.extensions.getExtension(ACADEMIC_PDF_VIEWER_EXTENSION_ID);
@@ -410,5 +451,5 @@ async function getAcademicPdfViewerApi() {
   }
 }
 
-  return { collectWorkspaceTemporaryFiles, collectWorkspaceTemporaryFileState, temporaryFileExcludePatterns, temporaryFileWatcherPatterns, searchForFile, getAcademicPdfViewerExtension, formatSyncTexTracePath, formatSyncTexTraceUri, findOpenPdfGroup, forgetClosedPdfTabs, getInstalledPdfViewers, isWindowsBatch, runProcess, resolveSyncTexExecutable, resolveMtxRunExecutable, getAcademicPdfViewerApi, openPdfFile, reloadActiveAcademicPdf };
+  return { collectWorkspaceTemporaryFiles, collectWorkspaceTemporaryFileState, temporaryFileExcludePatterns, temporaryFileWatcherPatterns, searchForFile, getAcademicPdfViewerExtension, formatSyncTexTracePath, formatSyncTexTraceUri, findOpenPdfGroup, findAnyPdfGroup, forgetClosedPdfTabs, runProcess, resolveSyncTexExecutable, resolveMtxRunExecutable, getAcademicPdfViewerApi, openPdfFile, reloadActiveAcademicPdf };
 };

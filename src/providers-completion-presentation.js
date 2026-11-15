@@ -106,7 +106,8 @@ function buildSignatureParts(commandName, argumentSpecs, options = {}) {
       const parameterRows = [];
       const parameterNames = getArgumentParameterNames(spec);
       for (const parameterName of parameterNames) {
-        if (activeAssignmentKey && specIndex === activeParameterIndex && parameterName !== activeAssignmentKey) {
+        if (activeAssignmentKey && specIndex === activeParameterIndex
+          && parameterName.toLowerCase() !== activeAssignmentKey.toLowerCase()) {
           continue;
         }
 
@@ -138,10 +139,12 @@ function buildSignatureParts(commandName, argumentSpecs, options = {}) {
       const values = uniqueValues(spec.keywordValues || []);
       const types = uniqueValues((spec.keywordTypes || []).map(normalizeTypeLabel));
 
-      if (values.length > 0) {
-        docLines.push(values.map(value => formatValueCell(value)).join(' '));
-      } else if (types.length > 0) {
-        docLines.push(types.join(' '));
+      const entries = [
+        ...values.map(value => formatValueCell(value)),
+        ...types
+      ];
+      if (entries.length > 0) {
+        docLines.push(entries.join(' '));
       }
     }
 
@@ -171,5 +174,5 @@ function getCommandCompletionKind(metadata) {
   return completionKindBySemanticType[semanticType] || vscode.CompletionItemKind.Function;
 }
 
-  return { escapeHtmlText, buildHtmlKeyValueTable, formatValueCell, chunkValuesForDisplay, collectOrderedValues, buildSignatureParts, getCommandCompletionKind };
+  return { buildSignatureParts, getCommandCompletionKind };
 };

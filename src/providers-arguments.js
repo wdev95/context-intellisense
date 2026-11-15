@@ -3,6 +3,7 @@ const {
   isTemporaryWorkspaceFile,
   workspaceFileWatcherPattern
 } = require('./core/workspace-files');
+const { isEscaped, maskTeXComments } = require('./core/tex-text');
 
 /** Creates bracket parsing, argument information, and completion services. */
 module.exports = function createArgumentProviders(deps) {
@@ -25,6 +26,7 @@ module.exports = function createArgumentProviders(deps) {
   } = deps;
 
   const workspaceFileEntries = new Map();
+  const workspaceMPLibraries = new Set();
   let workspaceFileRefreshTimer;
   const workspaceFileChangeListeners = [
     vscode.workspace.onDidCreateFiles(invalidateWorkspaceFiles),
@@ -35,6 +37,7 @@ module.exports = function createArgumentProviders(deps) {
   const workspaceFileWatcher = vscode.workspace.createFileSystemWatcher(workspaceFileWatcherPattern());
   workspaceFileChangeListeners.push(
     workspaceFileWatcher.onDidCreate(invalidateWorkspaceFiles),
+    workspaceFileWatcher.onDidChange(invalidateWorkspaceFiles),
     workspaceFileWatcher.onDidDelete(invalidateWorkspaceFiles),
     workspaceFileWatcher
   );
@@ -49,6 +52,8 @@ module.exports = function createArgumentProviders(deps) {
       return;
     }
     workspaceFileState.promise = null;
+    workspaceReferenceState.promise = null;
+    workspaceMPLibraries.clear();
     workspaceFileEntries.clear();
     clearTimeout(workspaceFileRefreshTimer);
     workspaceFileRefreshTimer = setTimeout(() => {
@@ -56,14 +61,6 @@ module.exports = function createArgumentProviders(deps) {
       void initializeWorkspaceFileCache().catch(() => {});
     }, 100);
   }
-function isEscaped(text, position) {
-  let backslashes = 0;
-  for (let index = position - 1; index >= 0 && text[index] === '\\'; index--) {
-    backslashes++;
-  }
-  return backslashes % 2 === 1;
-}
-
 /** Finds the matching closing delimiter for an opening delimiter. */
 function findMatchingDelimiter(text, start, open, close) {
   let depth = 0;
@@ -159,13 +156,7 @@ function getBracketInvocationContext(linePrefix, lineSuffix = '') {
   };
   if (nested.length === 1 && nested[0].delimiter === '{') {
     const assignment = getCurrentAssignmentValue(context);
-    const spec = assignment && getCommandArgumentSpec(
-      context.commandName,
-      context.argumentIndex,
-      context.bracketCount,
-      context.argumentDelimiters,
-      context.currentSegment
-    );
+    const spec = assignment && getCommandArgumentSpec(context);
     context.isEnumListValue = spec?.kind === 'assignments'
       && getArgumentParameterValues(spec, getCommandEntry(context.commandName), assignment.key).size > 0;
   }
@@ -223,26 +214,28 @@ function getCurrentArgumentSegment(context) {
   return getTopLevelArgumentSegment(context && context.currentSegment || '');
 }
 
-/** Assigns the exact source range that VS Code should filter and replace. */
-function setCompletionRange(items, position, startCharacter) {
-  if (startCharacter >= position.character) {
-    return items;
-  }
-  const range = new vscode.Range(
-    position.line,
-    Math.max(0, startCharacter),
-    position.line,
-    position.character
-  );
+/** Replaces the whole token so insert-mode settings cannot leave its suffix behind. */
+function setCompletionRange(items, position, startCharacter, endCharacter = position.character, options = {}) {
+  const start = Math.max(0, startCharacter);
+  const end = Math.max(position.character, endCharacter);
   for (const item of items) {
-    item.range = range;
+    const label = String(typeof item.label === 'string' ? item.label : item.label.label);
+    const itemEnd = label.endsWith('=') ? Math.max(end, options.keyEndCharacter ?? end) : end;
+    item.range = new vscode.Range(position.line, start, position.line, itemEnd);
+    if (options.showAll) {
+      const current = options.lineText.slice(start, itemEnd).trim().replace(/=$/, '').toLowerCase();
+      const insertText = item.insertText?.value || item.insertText || label;
+      const candidate = String(insertText).replace(/\$\{?\d+(?::[^}]*)?\}?/g, '').trim().replace(/=$/, '').toLowerCase();
+      item.preselect = !!current && candidate === current;
+      item.filterText = `${options.lineText.slice(start, itemEnd)}${item.filterText || label}`;
+    }
   }
   return items;
 }
 
-/** Keeps context-sensitive argument completions synchronized while typing. */
-function createDynamicCompletionList(items) {
-  return new vscode.CompletionList(items, true);
+/** Returns no completion list when the active context has no suggestions. */
+function createDynamicCompletionList(items, isIncomplete = true) {
+  return items?.length ? new vscode.CompletionList(items, isIncomplete) : undefined;
 }
 
 /** Returns the start of the text currently being completed. */
@@ -263,6 +256,27 @@ function getCompletionRangeStart(linePrefix, position, context) {
   return equalsIndex >= 0 ? valueStart : segmentStart + leadingWhitespace;
 }
 
+/** Finds the end of the token at the cursor, including text to its right. */
+function getCompletionRangeEnd(lineSuffix, linePrefix, position, context) {
+  const segment = getCurrentArgumentSegment(context);
+  const equalsIndex = findAssignmentSeparator(segment);
+  const segmentStart = position.character - segment.length;
+  const inKey = equalsIndex < 0 || position.character <= segmentStart + equalsIndex;
+  const commandStart = linePrefix.lastIndexOf('\\');
+  const valueStart = equalsIndex < 0 ? segmentStart : segmentStart + equalsIndex + 1;
+  const isCommand = commandStart >= valueStart
+    && /^[A-Za-z]*$/.test(linePrefix.slice(commandStart + 1));
+  const suffix = lineSuffix;
+  let length = 0;
+  while (length < suffix.length) {
+    const character = suffix[length];
+    if (/[\s,\[\]{}]/.test(character) || (inKey && character === '=')) break;
+    if (isCommand && !/[A-Za-z]/.test(character)) break;
+    length += 1;
+  }
+  return position.character + length;
+}
+
 /** Returns whether a segment is an empty argument or assignment value. */
 function isEmptyCompletionSegment(context) {
   if (context.isEnumListValue) {
@@ -273,7 +287,8 @@ function isEmptyCompletionSegment(context) {
     return true;
   }
   const equalsIndex = segment.indexOf('=');
-  return equalsIndex >= 0 && !segment.slice(equalsIndex + 1).trim();
+  return equalsIndex >= 0 && !segment.slice(equalsIndex + 1).trim()
+    && !/^\s*\{/.test(context.remainingSegment || '');
 }
 
 /** Resolves the enum member currently being edited in an assignment value. */
@@ -312,21 +327,16 @@ function triggerEmptyArgumentSuggestions(editor, refresh = false) {
     return;
   }
 
-  const argumentContext = getDocumentBracketContext(editor.document, editor.selection.active);
-  const argumentSpec = argumentContext && getCommandArgumentSpec(
-    argumentContext.commandName,
-    argumentContext.argumentIndex,
-    argumentContext.bracketCount,
-    argumentContext.argumentDelimiters,
-    argumentContext.currentSegment
-  );
+  const position = editor.selection.active;
+  const argumentContext = getDocumentBracketContext(editor.document, position);
+  const argumentSpec = getCommandArgumentSpec(argumentContext);
   const context = argumentContext
     && isEmptyCompletionSegment(argumentContext)
     && argumentSpec
     ? argumentContext
     : null;
   const key = context
-    ? `${editor.document.uri.toString()}:${editor.selection.active.line}:${editor.selection.active.character}`
+    ? `${editor.document.uri.toString()}:${position.line}:${position.character}:${context.commandName}:${context.argumentIndex}:${context.currentSegment}`
     : '';
   if (!context) {
     triggerEmptyArgumentSuggestions.lastPosition = '';
@@ -345,7 +355,12 @@ function triggerEmptyArgumentSuggestions(editor, refresh = false) {
   }
 
   triggerEmptyArgumentSuggestions.lastPosition = key;
-  void vscode.commands.executeCommand('editor.action.triggerSuggest');
+  void createArgumentCompletionItems(context, true).then(items => {
+    if (items.length && vscode.window.activeTextEditor === editor
+      && editor.selection.active.isEqual(position)) {
+      void vscode.commands.executeCommand('editor.action.triggerSuggest');
+    }
+  });
 }
 
 /** Shows argument information whenever the cursor is inside an argument. */
@@ -353,16 +368,24 @@ function triggerArgumentInformation(editor, refresh = false, selectionChange = f
   if (!editor || !isContextTexDocument(editor.document)) {
     return;
   }
+  if (editor.selections.some(selection => !selection.isEmpty)) {
+    void vscode.commands.executeCommand('hideSuggestWidget');
+    void vscode.commands.executeCommand('closeParameterHints');
+    return;
+  }
 
   const context = getEditorBracketContext(editor);
   if (!context) {
     const line = editor.document.lineAt(editor.selection.active.line).text;
     const prefix = line.slice(0, editor.selection.active.character);
-    if (/\\[A-Za-z]*$/.test(prefix)) {
+    const commandMatch = prefix.match(/\\([A-Za-z]*)$/);
+    if (commandMatch) {
       if (selectionChange) {
         return;
       }
-      void vscode.commands.executeCommand('editor.action.triggerSuggest');
+      if (createCommandItems(commandMatch[1], editor.document.languageId === 'context-internal-tex').length) {
+        void vscode.commands.executeCommand('editor.action.triggerSuggest');
+      }
       return;
     }
     void vscode.commands.executeCommand('hideSuggestWidget');
@@ -379,34 +402,18 @@ function scheduleArgumentInformation(editor, refresh = false, selectionChange = 
   setTimeout(() => triggerArgumentInformation(editor, refresh, selectionChange), 0);
 }
 
-function takeBracketArguments(specs, count) {
-  let seen = 0;
-  const result = [];
-  for (const spec of specs || []) {
-    result.push(spec);
-    if (spec.delimiter === 'bracket' && ++seen >= count) {
-      break;
-    }
-  }
-  return result;
-}
-
-function getCommandArgumentSpec(commandName, argumentIndex, bracketCount = argumentIndex + 1, argumentDelimiters = [], currentSegment = '') {
+/** Resolves the active argument schema shared by editor features and diagnostics. */
+function getCommandArgumentSpec(context) {
+  if (!context) return null;
   const specs = getCommandSignatureSpecs(
-    commandName,
-    bracketCount,
-    argumentDelimiters,
-    argumentIndex,
-    currentSegment
+    context.commandName,
+    context.bracketCount,
+    context.argumentDelimiters,
+    context.argumentIndex,
+    context.currentSegment,
+    context.remainingSegment
   );
-  if (!specs) {
-    return null;
-  }
-
-  if (argumentIndex < 0 || argumentIndex >= specs.length) {
-    return null;
-  }
-  return specs[argumentIndex];
+  return specs?.[context.argumentIndex] || null;
 }
 
 /** Returns whether a signature still requires an argument after its brackets. */
@@ -421,80 +428,94 @@ function hasRequiredArgumentAfterBrackets(specs, bracketCount) {
   return false;
 }
 
-/** Merges metadata from equivalent XML argument definitions. */
-function mergeArgumentSpec(left, right) {
-  const parameterTypes = left.parameterTypes && left.parameterTypes.size > 0
-    ? left.parameterTypes
-    : right.parameterTypes || new Map();
-  const parameterValues = left.parameterValues && left.parameterValues.size > 0
-    ? left.parameterValues
-    : right.parameterValues || new Map();
-  return {
-    ...left,
-    parameterNames: left.parameterNames && left.parameterNames.length > 0 ? left.parameterNames : right.parameterNames || [],
-    parameterSources: left.parameterSources && left.parameterSources.length > 0 ? left.parameterSources : right.parameterSources || [],
-    keywordValues: left.keywordValues && left.keywordValues.length > 0 ? left.keywordValues : right.keywordValues || [],
-    keywordTypes: left.keywordTypes && left.keywordTypes.length > 0 ? left.keywordTypes : right.keywordTypes || [],
-    parameterTypes,
-    parameterValues,
-    allowsArbitraryKeys: left.allowsArbitraryKeys || right.allowsArbitraryKeys,
-    hasParameterTags: left.hasParameterTags || right.hasParameterTags
-  };
-}
-
-/** Merges complete argument variants with the same XML shape. */
-function mergeEquivalentArgumentVariants(variants) {
-  const merged = new Map();
-  for (const variant of variants) {
-    const shape = variant
-      .map(spec => `${spec.kind}:${spec.delimiter}:${spec.list ? 'list' : 'single'}`)
-      .join('|');
-    const existing = merged.get(shape);
-    if (!existing) {
-      merged.set(shape, variant.map(spec => ({ ...spec })));
-      continue;
-    }
-    for (let index = 0; index < existing.length; index++) {
-      existing[index] = mergeArgumentSpec(existing[index], variant[index]);
-    }
-  }
-  return [...merged.values()];
-}
-
 /** Selects the XML signature that matches the entered delimiters and position. */
-function getCommandSignatureSpecs(commandName, bracketCount = 0, argumentDelimiters = [], activeArgumentIndex = -1, currentSegment = '') {
+/** Returns the comma-separated segment surrounding the cursor. */
+function getActiveSegmentAtCursor(currentSegment, remainingSegment) {
+  if (remainingSegment === undefined) {
+    return String(currentSegment || '').trim();
+  }
+  const text = `${currentSegment || ''}${remainingSegment || ''}`;
+  const cursor = String(currentSegment || '').length;
+  return getTopLevelArgumentSegments(text).find(segment =>
+    cursor >= segment.start && cursor <= segment.start + segment.text.length
+  )?.text.trim() || '';
+}
+
+/** Returns the argument schema matching the source and the cursor's active field. */
+function getCommandSignatureSpecs(commandName, bracketCount = 0, argumentDelimiters = [], activeArgumentIndex = -1, currentSegment = '', remainingSegment = '') {
   if (bracketCount > 0) {
     const variants = getCache().commandArgumentSpecVariants.get(commandName) || [];
+    if (variants.length === 0) {
+      return getCache().commandArgumentSpecs.get(commandName) || [];
+    }
     const matching = variants.filter(specs =>
       specs.filter(spec => spec.delimiter === 'bracket').length === bracketCount
     );
-    for (const specs of variants) {
-      if (specs.filter(spec => spec.delimiter === 'bracket').length > bracketCount
-        && !hasRequiredArgumentAfterBrackets(specs, bracketCount)) {
-        matching.push(takeBracketArguments(specs, bracketCount));
-      }
+    if (matching.length === 0) {
+      return [];
     }
-    const mergedMatching = mergeEquivalentArgumentVariants(matching);
     const delimiterMatching = argumentDelimiters.length > 0
-      ? mergedMatching.filter(specs => argumentDelimiters.every((delimiter, index) =>
+      ? matching.filter(specs => argumentDelimiters.every((delimiter, index) =>
         specs[index] && specs[index].delimiter === delimiter
       ))
-      : mergedMatching;
-    let candidates = delimiterMatching.length > 0 ? delimiterMatching : mergedMatching;
+      : matching;
+    if (delimiterMatching.length === 0) {
+      return [];
+    }
+    let candidates = delimiterMatching;
     const complete = candidates.filter(specs => !hasRequiredArgumentAfterBrackets(specs, bracketCount));
     if (complete.length > 0) {
       candidates = complete;
     }
-    const activeSegment = String(currentSegment || '').trim();
+    const activeSegment = getActiveSegmentAtCursor(currentSegment, remainingSegment);
+    const previousSegment = activeSegment || String(currentSegment || '')
+      .replace(/,\s*$/, '')
+      .split(',')
+      .at(-1)
+      .trim();
     if (activeArgumentIndex >= 0 && candidates.length > 1) {
-      const preferredKind = activeSegment.includes('=') ? 'assignments' : 'keywords';
-      const kindMatching = candidates.filter(specs =>
+      const activeSpecs = candidates.map(specs => specs[activeArgumentIndex]);
+      const assignmentNames = activeSpecs
+        .filter(spec => spec?.kind === 'assignments')
+        .flatMap(spec => getArgumentParameterNames(spec));
+      const fieldName = previousSegment.split('=', 1)[0].trim().toLowerCase();
+      const isAssignmentField = previousSegment.includes('=')
+        || (fieldName && assignmentNames.some(name => name.toLowerCase().startsWith(fieldName)));
+      const preferredKind = isAssignmentField ? 'assignments' : 'keywords';
+      let kindMatching = candidates.filter(specs =>
         specs[activeArgumentIndex]?.kind === preferredKind
       );
       if (kindMatching.length > 0) {
         candidates = kindMatching;
       }
+      if (preferredKind === 'assignments') {
+        const exactKeyMatches = candidates.filter(specs =>
+          getArgumentParameterNames(specs[activeArgumentIndex]).some(name =>
+            name.toLowerCase() === fieldName
+          )
+        );
+        const prefixKeyMatches = candidates.filter(specs =>
+          getArgumentParameterNames(specs[activeArgumentIndex]).some(name =>
+            name.toLowerCase().startsWith(fieldName)
+          )
+        );
+        if (exactKeyMatches.length > 0) {
+          candidates = exactKeyMatches;
+        } else if (prefixKeyMatches.length > 0) {
+          candidates = prefixKeyMatches;
+        } else {
+          const constrained = candidates.filter(specs => {
+            const spec = specs[activeArgumentIndex];
+            return !spec?.allowsArbitraryKeys && getArgumentParameterNames(spec).length > 0;
+          });
+          if (constrained.length > 0) candidates = constrained;
+        }
+      }
     }
+    candidates.sort((left, right) =>
+      (left[activeArgumentIndex]?.argumentPosition ?? activeArgumentIndex)
+      - (right[activeArgumentIndex]?.argumentPosition ?? activeArgumentIndex)
+    );
     // Do not show optional trailing arguments that are absent from the source.
     if (candidates.length > 1) {
       const shortestSignatureLength = Math.min(...candidates.map(specs => specs.length));
@@ -507,36 +528,31 @@ function getCommandSignatureSpecs(commandName, bracketCount = 0, argumentDelimit
   return getCache().commandArgumentSpecs.get(commandName) || [];
 }
 
-/** Returns direct and inherited keys available in an assignment argument. */
 /** Returns whether an XML parameter is a concrete assignment key. */
 function isConcreteParameterName(name) {
-  return /^[a-z][a-z0-9]*(?:[-_][a-z0-9]+)*$/.test(String(name || '').trim());
+  return /^[a-z][a-z0-9]*(?:[-_][a-z0-9]+)*$/i.test(String(name || '').trim());
 }
 
 /** Returns direct and inherited concrete keys available in an assignment argument. */
 function getArgumentParameterNames(argumentSpec) {
   const names = [
-    ...(argumentSpec ? argumentSpec.parameterNames || [] : [])
-  ];
-
-  for (const sourceName of argumentSpec && argumentSpec.parameterSources || []) {
-    const source = getCommandEntry(sourceName);
-    if (source) {
-      names.push(...source.parameters);
-    }
-  }
-
-  return uniqueValues(names).filter(isConcreteParameterName);
+    ...(argumentSpec?.parameterNames || []),
+    ...(argumentSpec?.parameterSources || []).flatMap(sourceName =>
+      [...(getCommandEntry(sourceName)?.parameters || [])]
+    )
+  ].map(name => String(name).trim());
+  return [...new Map(names.filter(isConcreteParameterName).map(name => [name.toLowerCase(), name])).values()];
 }
 
 /** Returns XML-defined values from the active argument and inherited sources. */
 function getArgumentParameterValues(argumentSpec, entry, parameterName) {
-  const values = new Set(argumentSpec?.parameterValues?.get(parameterName) || []);
-  for (const value of entry?.parameterValues?.get(parameterName) || []) {
+  const key = String(parameterName || '').trim().toLowerCase();
+  const values = new Set(argumentSpec?.parameterValues?.get(key) || []);
+  for (const value of entry?.parameterValues?.get(key) || []) {
     values.add(value);
   }
   for (const sourceName of argumentSpec?.parameterSources || []) {
-    for (const value of getCommandEntry(sourceName)?.parameterValues?.get(parameterName) || []) {
+    for (const value of getCommandEntry(sourceName)?.parameterValues?.get(key) || []) {
       values.add(value);
     }
   }
@@ -545,8 +561,9 @@ function getArgumentParameterValues(argumentSpec, entry, parameterName) {
 
 /** Returns XML-declared types for an assignment parameter. */
 function getArgumentParameterTypes(argumentSpec, entry, parameterName) {
-  const types = new Set(argumentSpec?.parameterTypes?.get(parameterName) || []);
-  for (const type of entry?.parameterTypes?.get(parameterName) || []) {
+  const key = String(parameterName || '').trim().toLowerCase();
+  const types = new Set(argumentSpec?.parameterTypes?.get(key) || []);
+  for (const type of entry?.parameterTypes?.get(key) || []) {
     types.add(type);
   }
   return types;
@@ -554,22 +571,16 @@ function getArgumentParameterTypes(argumentSpec, entry, parameterName) {
 
 /** Returns whether an XML argument type identifies a ConTeXt reference. */
 function isReferenceType(type) {
-  return String(type || '').replace(/^cd:/, '').toLowerCase() === 'reference';
+  return String(type || '').trim().toLowerCase() === 'cd:reference';
 }
 
 /** Returns whether an XML argument type identifies a workspace file. */
 function isFileType(type) {
-  return String(type || '').replace(/^cd:/, '').toLowerCase() === 'file';
+  return String(type || '').trim().toLowerCase() === 'cd:file';
 }
 
 /** Determines whether this argument defines a reference instead of consuming one. */
-function isReferenceDefinitionContext(context, spec = context && getCommandArgumentSpec(
-  context.commandName,
-  context.argumentIndex,
-  context.bracketCount,
-  context.argumentDelimiters,
-  context.currentSegment
-)) {
+function isReferenceDefinitionContext(context, spec = getCommandArgumentSpec(context)) {
   if (!context) {
     return false;
   }
@@ -591,32 +602,37 @@ function isReferenceDefinitionContext(context, spec = context && getCommandArgum
     && /^reference$/i.test(getActiveAssignmentKey(context.currentSegment))) {
     return true;
   }
-  return spec?.kind === 'keywords'
-    && (getCache().commandArgumentSpecVariants.get(context.commandName) || [])
-      .some(variant => variant.some(argument =>
-        argument.kind === 'assignments'
-        && (argument.parameterNames || []).some(name => /^reference$/i.test(name))
-      ));
+  return false;
 }
 
-const WORKSPACE_FILE_ARGUMENTS = {
+const WORKSPACE_FILE_ARGUMENT_POLICIES = {
   externalfigure: {
     argumentIndex: 0,
     matches: filePath => isExternalFigureFile(filePath),
+    validate: true,
+    additionalValues: () => workspaceMPLibraries.has('dum') ? ['dummy'] : [],
     detail: 'Workspace image'
   },
   environment: {
     argumentIndex: 0,
-    matches: (filePath, path) => /^env_.*\.tex$/i.test(path.basename(filePath)),
+    matches: filePath => path.extname(filePath).toLowerCase() === '.tex',
+    validate: true,
     stripTexExtension: true,
     detail: 'ConTeXt environment'
   },
   component: {
     argumentIndex: 0,
-    matches: (filePath, path) => /^c_.*\.tex$/i.test(path.basename(filePath)),
+    matches: filePath => path.extname(filePath).toLowerCase() === '.tex',
+    validate: true,
     stripTexExtension: true,
     detail: 'ConTeXt component'
   }
+};
+const GENERIC_WORKSPACE_FILE_ARGUMENT = {
+  matches: () => true,
+  validate: false,
+  stripTexExtension: false,
+  detail: 'Workspace file'
 };
 
 /** Returns the cached workspace file inventory, scanning it only once per change. */
@@ -633,17 +649,15 @@ async function getWorkspaceFiles() {
 
 /** Preloads the workspace file inventory before the first completion request. */
 async function initializeWorkspaceFileCache() {
-  await Promise.all(Object.values(WORKSPACE_FILE_ARGUMENTS).map(getWorkspaceFileEntries));
+  await Promise.all(Object.values(WORKSPACE_FILE_ARGUMENT_POLICIES).map(getWorkspaceFileEntries));
 }
 
-/** Resolves the file-completion policy for an XML-declared file argument. */
+/** Resolves a shared workspace file view from the argument's XML file type. */
 function getWorkspaceFileArgument(context, spec) {
-  const rule = WORKSPACE_FILE_ARGUMENTS[String(context.commandName).toLowerCase()];
-  return rule?.argumentIndex === context.argumentIndex
-    && spec?.kind === 'keywords'
-    && (spec.keywordTypes || []).some(isFileType)
-    ? rule
-    : null;
+  if (spec?.kind !== 'keywords' || !(spec.keywordTypes || []).some(isFileType)) return null;
+  const policy = WORKSPACE_FILE_ARGUMENT_POLICIES[String(context.commandName).toLowerCase()] || {};
+  if (policy.argumentIndex !== undefined && policy.argumentIndex !== context.argumentIndex) return null;
+  return Object.keys(policy).length > 0 ? policy : GENERIC_WORKSPACE_FILE_ARGUMENT;
 }
 
 /** Returns matching files with separate display and insertion names. */
@@ -667,11 +681,16 @@ async function getWorkspaceFileEntries(rule) {
       });
     workspaceFileEntries.set(rule, pending);
   }
-  return workspaceFileEntries.get(rule);
+  const entries = await workspaceFileEntries.get(rule);
+  return [
+    ...entries,
+    ...(rule.additionalValues?.() || []).map(value => ({ value, label: value, relativePath: '', virtual: true }))
+  ];
 }
 
 /** Creates filtered file completions from the shared workspace inventory. */
 async function createWorkspaceFileItems(rule) {
+  if (rule.additionalValues) await scanWorkspaceReferences();
   const files = await getWorkspaceFileEntries(rule);
   return files.map(({ relativePath, value, label }) => {
     const item = new vscode.CompletionItem(label, vscode.CompletionItemKind.File);
@@ -681,21 +700,6 @@ async function createWorkspaceFileItems(rule) {
     item.detail = directory !== '.' ? `${rule.detail} · ${directory}` : rule.detail;
     return item;
   });
-}
-
-/** Masks comments while preserving offsets used by diagnostics. */
-function maskTeXComments(text) {
-  const characters = text.split('');
-  for (let index = 0; index < characters.length; index += 1) {
-    if (characters[index] !== '%' || isEscaped(text, index)) {
-      continue;
-    }
-    while (index < characters.length && characters[index] !== '\n' && characters[index] !== '\r') {
-      characters[index] = ' ';
-      index += 1;
-    }
-  }
-  return characters.join('');
 }
 
 /** Finds an assignment separator outside nested TeX delimiters. */
@@ -849,21 +853,17 @@ async function getArgumentDiagnostics(sourceText, definedReferences = new Set())
         argumentIndex: argument.argumentIndex,
         bracketCount,
         argumentDelimiters: delimiters,
-        currentSegment: content
+        currentSegment: content,
+        remainingSegment: ''
       };
-      const spec = getCommandArgumentSpec(
-        context.commandName,
-        context.argumentIndex,
-        context.bracketCount,
-        context.argumentDelimiters,
-        context.currentSegment
-      );
+      const spec = getCommandArgumentSpec(context);
       if (!spec) {
         continue;
       }
 
       const fileRule = getWorkspaceFileArgument(context, spec);
-      if (fileRule) {
+      if (fileRule?.validate
+        && (fileRule.argumentIndex === undefined || fileRule.argumentIndex === context.argumentIndex)) {
         const entries = await getWorkspaceFileEntries(fileRule);
         const segments = spec.list ? getTopLevelArgumentSegments(content) : [{ text: content, start: 0 }];
         for (const segment of segments) {
@@ -887,18 +887,48 @@ async function getArgumentDiagnostics(sourceText, definedReferences = new Set())
         }
       }
 
+      if (spec.kind === 'keywords' && spec.keywordValues?.length
+        && !spec.allowsArbitraryValues
+        && !(spec.keywordTypes || []).some(type => isReferenceType(type) || isFileType(type))) {
+        const argumentSpan = getArgumentValueSpan(content, contentStart);
+        const values = spec.list || argumentSpan.grouped
+          ? getTopLevelArgumentSegments(argumentSpan.value)
+          : [{ text: argumentSpan.value, start: 0 }];
+        const allowedValues = new Set(spec.keywordValues.map(value => value.toLowerCase()));
+        for (const segment of values) {
+          const valueSpan = getArgumentValueSpan(segment.text, argumentSpan.start + segment.start);
+          const value = valueSpan.value;
+          if (value && !isDynamicArgumentValue(value) && !allowedValues.has(value.toLowerCase())) {
+            report(valueSpan.start, valueSpan.end,
+              `Invalid value "${value}"; expected: ${[...spec.keywordValues].join(', ')}.`, 'invalid-keyword-value');
+          }
+        }
+      }
+
       if (spec.kind !== 'assignments') {
         continue;
       }
       const entry = getCommandEntry(context.commandName);
       for (const segment of getTopLevelArgumentSegments(content)) {
+        const segmentContext = { ...context, currentSegment: segment.text };
+        const segmentSpec = getCommandArgumentSpec(segmentContext);
+        if (segmentSpec?.kind !== 'assignments') continue;
         const separator = findAssignmentSeparator(segment.text);
         if (separator < 0) {
           continue;
         }
         const key = segment.text.slice(0, separator).trim();
-        const allowedValues = getArgumentParameterValues(spec, entry, key);
-        const allowedTypes = getArgumentParameterTypes(spec, entry, key);
+        const allowedKeys = getArgumentParameterNames(segmentSpec);
+        if (allowedKeys.length && !segmentSpec.allowsArbitraryKeys
+          && !allowedKeys.some(name => name.toLowerCase() === key.toLowerCase())) {
+          const expected = allowedKeys.join(', ');
+          const keySpan = getArgumentValueSpan(segment.text.slice(0, separator), contentStart + segment.start);
+          report(keySpan.start, keySpan.end,
+            `Invalid key "${key}"; expected: ${expected}.`, 'invalid-argument-key');
+          continue;
+        }
+        const allowedValues = getArgumentParameterValues(segmentSpec, entry, key);
+        const allowedTypes = getArgumentParameterTypes(segmentSpec, entry, key);
         if (commandCategory !== 'bibliography' && !/^reference$/i.test(key)
           && [...allowedTypes].some(isReferenceType)) {
           reportUndefinedReferences(
@@ -1030,13 +1060,14 @@ function parseContextReferences(content) {
       argumentDelimiters,
       currentSegment: argumentText
     };
-    const spec = getCommandArgumentSpec(
-      argument.commandName,
-      argument.argumentIndex,
+    const spec = getCommandArgumentSpec({
+      commandName: argument.commandName,
+      argumentIndex: argument.argumentIndex,
       bracketCount,
       argumentDelimiters,
-      argumentText
-    );
+      currentSegment: argumentText,
+      remainingSegment: ''
+    });
     if (getCache().commandMetadata.get(argument.commandName)?.category === 'bibliography') {
       continue;
     }
@@ -1084,13 +1115,14 @@ function inferReferenceArguments(content) {
       const argument = content.slice(position + 1, close).trim();
       argumentDelimiters.push(open === '[' ? 'bracket' : 'brace');
       const compact = argument.replace(/[{}\s]/g, '');
-      const spec = getCommandArgumentSpec(
-        commandMatch[1],
+      const spec = getCommandArgumentSpec({
+        commandName: commandMatch[1],
         argumentIndex,
-        argumentDelimiters.filter(delimiter => delimiter === 'bracket').length,
+        bracketCount: argumentDelimiters.filter(delimiter => delimiter === 'bracket').length,
         argumentDelimiters,
-        argument
-      );
+        currentSegment: argument,
+        remainingSegment: ''
+      });
       const parameterName = spec?.kind === 'assignments'
         ? getActiveAssignmentKey(argument)
         : '';
@@ -1130,6 +1162,7 @@ async function scanWorkspaceReferences() {
       '**/{.git,node_modules}/**'
     );
     const references = new Set();
+    workspaceMPLibraries.clear();
     const openDocuments = new Map(vscode.workspace.textDocuments.map(document => [document.uri.toString(), document]));
     for (const uri of files) {
       try {
@@ -1137,6 +1170,14 @@ async function scanWorkspaceReferences() {
           ?? await fs.promises.readFile(uri.fsPath, 'utf8'));
         for (const reference of parseContextReferences(content)) {
           references.add(reference);
+        }
+        for (const [open, argument] of mapCommandArguments(content)) {
+          if (argument.commandName.toLowerCase() === 'usemplibrary' && argument.argumentIndex === 0) {
+            for (const member of getTopLevelArgumentSegments(content.slice(open + 1, argument.close))) {
+              const library = normalizeArgumentValue(member.text).toLowerCase();
+              if (library) workspaceMPLibraries.add(library);
+            }
+          }
         }
       } catch {
         // Ignore files that disappear or cannot be read while scanning.
@@ -1177,6 +1218,9 @@ function isReferenceArgumentContext(context, spec) {
 
 /** Returns completion items for special workspace-backed bracket arguments. */
 async function createWorkspaceArgumentItems(context, spec) {
+  if (isReferenceDefinitionContext(context, spec)) {
+    return [];
+  }
   const fileArgument = getWorkspaceFileArgument(context, spec);
   if (fileArgument) {
     return createWorkspaceFileItems(fileArgument);
@@ -1190,15 +1234,17 @@ async function createWorkspaceArgumentItems(context, spec) {
   return null;
 }
 
-function getActiveAssignmentKey(currentSegment) {
-  const rawSegment = currentSegment || '';
+function getActiveAssignmentKey(currentSegment, remainingSegment = '') {
+  const rawSegment = remainingSegment
+    ? getActiveSegmentAtCursor(currentSegment, remainingSegment)
+    : currentSegment || '';
   const segment = getTopLevelArgumentSegment(rawSegment);
   const eqIndex = segment.indexOf('=');
   if (eqIndex < 0) {
     return '';
   }
 
-  return segment.slice(0, eqIndex).trim();
+  return segment.slice(0, eqIndex).trim().toLowerCase();
 }
 
 /** Returns the stable order key for a command's argument form. */
@@ -1263,18 +1309,18 @@ function createCommandItems(prefixPart, includeInternal = false) {
 
 function createValueItems(values, filter = '') {
   const normalizedFilter = filter.trim().toLowerCase();
-  return [...values]
+  return [...new Set(values)]
     .filter(value => !normalizedFilter || value.toLowerCase().startsWith(normalizedFilter))
-    .map(value => {
+    .map((value, index) => {
       const item = new vscode.CompletionItem(value, vscode.CompletionItemKind.EnumMember);
       item.insertText = value;
-      item.sortText = `0_${value}`;
+      item.sortText = String(index).padStart(6, '0');
       item.filterText = value;
       return item;
     });
 }
 
-function createKeywordAndParameterItems(context, argumentSpec) {
+function createKeywordAndParameterItems(context, argumentSpec, showAll = false) {
   if (!context) {
     return [];
   }
@@ -1286,10 +1332,10 @@ function createKeywordAndParameterItems(context, argumentSpec) {
   if (argumentSpec && argumentSpec.kind === 'keywords') {
     const segment = (currentSegment || '').trim();
     if (segment.startsWith('\\')) {
-      return createCommandItems(segment.slice(1));
+      return createCommandItems(showAll ? '' : segment.slice(1));
     }
 
-    return createValueItems(argumentSpec.keywordValues || [], segment);
+    return createValueItems(argumentSpec.keywordValues || [], showAll ? '' : segment);
   }
 
   if (argumentSpec && argumentSpec.kind !== 'assignments') {
@@ -1304,21 +1350,15 @@ function createKeywordAndParameterItems(context, argumentSpec) {
       const label = `${parameter}=`;
       const item = new vscode.CompletionItem(label, vscode.CompletionItemKind.Enum);
       item.insertText = new vscode.SnippetString(`${parameter}=$0`);
-      item.command = {
-        command: 'editor.action.triggerSuggest',
-        title: 'Trigger suggest for parameter values'
-      };
       item.sortText = `1_${label}`;
       item.filterText = label;
       out.push(item);
     }
 
-    const normalizedFilter = (filterSegment || '').trim().toLowerCase();
-    if (normalizedFilter) {
-      return out.filter(item => item.label.toString().toLowerCase().startsWith(normalizedFilter));
-    }
-
-    return out;
+    const normalizedFilter = String(filterSegment || '').trim().toLowerCase();
+    return normalizedFilter && !showAll
+      ? out.filter(item => item.label.toString().toLowerCase().startsWith(normalizedFilter))
+      : out;
   }
 
   const rawSegment = currentSegment;
@@ -1331,11 +1371,11 @@ function createKeywordAndParameterItems(context, argumentSpec) {
     const valuePart = enumValue?.value ?? valuePartRaw.trim();
 
     if (/^\s*\\/.test(valuePartRaw)) {
-      return createCommandItems(valuePartRaw.replace(/^\s*\\/, ''));
+      return createCommandItems(showAll ? '' : valuePartRaw.replace(/^\s*\\/, ''));
     }
 
-    if (argumentSpec && argumentSpec.kind === 'assignments' && argumentSpec.allowsArbitraryKeys) {
-      // Arbitrary assignments intentionally do not suggest constrained values.
+    if (isReferenceDefinitionContext(context, argumentSpec)
+      && [...getArgumentParameterTypes(argumentSpec, entry, key)].some(isReferenceType)) {
       return [];
     }
 
@@ -1345,7 +1385,7 @@ function createKeywordAndParameterItems(context, argumentSpec) {
       return [];
     }
 
-    return createValueItems(values, valuePart);
+    return createValueItems(values, showAll ? '' : valuePart);
   }
 
   if (argumentSpec && argumentSpec.kind === 'assignments') {
@@ -1358,21 +1398,15 @@ function createKeywordAndParameterItems(context, argumentSpec) {
   ];
 }
 
-async function createArgumentCompletionItems(context) {
+async function createArgumentCompletionItems(context, showAll = false) {
   if (!context) {
     return [];
   }
 
-  const spec = getCommandArgumentSpec(
-    context.commandName,
-    context.argumentIndex,
-    context.bracketCount,
-    context.argumentDelimiters,
-    context.currentSegment
-  );
+  const spec = getCommandArgumentSpec(context);
   const workspaceItems = await createWorkspaceArgumentItems(context, spec);
   if (!workspaceItems) {
-    return createKeywordAndParameterItems(context, spec);
+    return createKeywordAndParameterItems(context, spec, showAll);
   }
 
   const rawSegment = getCurrentArgumentSegment(context).trim();
@@ -1380,7 +1414,7 @@ async function createArgumentCompletionItems(context) {
   const filter = (equalsIndex >= 0 ? rawSegment.slice(equalsIndex + 1) : rawSegment)
     .trim()
     .toLowerCase();
-  return workspaceItems.filter(item => !filter || item.label.toLowerCase().startsWith(filter));
+  return workspaceItems.filter(item => showAll || !filter || item.label.toLowerCase().startsWith(filter));
 }
 
   return {
@@ -1397,6 +1431,7 @@ async function createArgumentCompletionItems(context) {
     setCompletionRange,
     createDynamicCompletionList,
     getCompletionRangeStart,
+    getCompletionRangeEnd,
     triggerArgumentInformation,
     scheduleArgumentInformation,
     getCommandArgumentSpec,
@@ -1404,8 +1439,6 @@ async function createArgumentCompletionItems(context) {
     getArgumentParameterNames,
     getArgumentParameterValues,
     getArgumentParameterTypes,
-    getArgumentDiagnostics,
-    parseContextReferences,
     initializeWorkspaceFileCache,
     isReferenceType,
     scanWorkspaceReferences,
